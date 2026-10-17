@@ -1,0 +1,15 @@
+# 01-100rps-16workers: RATE=100 WORKERS=16
+              * ingest: 100.00 iterations/s for 1m0s (maxVUs: 50-200, gracefulStop: 30s)
+    checks_succeeded...: 100.00% 6122 out of 6122
+    http_req_duration..............: avg=1.42ms min=293.72µs med=1.19ms max=51.87ms p(90)=1.71ms p(95)=1.93ms
+    http_req_failed................: 0.00%  0 out of 6122
+    iterations.....................: 6001   100.010668/s
+mensagens aceitas | 6001
+entregues (sent) | 6001
+dead | 0
+sem linha na outbox | 0
+tentativas extras | 309
+janela de entrega (s) | 60.5
+vazão de entrega (msg/s) | 99.2
+ponta a ponta p50/p95/p99 (ms) | 162 / 246 / 519
+provedor: {"accepted":6001,"duplicates":0,"failures_injected":309,"order_violations":0}

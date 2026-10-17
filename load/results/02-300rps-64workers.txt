@@ -1,0 +1,16 @@
+# 02-300rps-64workers: RATE=300 WORKERS=64
+              * ingest: 300.00 iterations/s for 1m0s (maxVUs: 50-200, gracefulStop: 30s)
+    checks_succeeded...: 100.00% 18171 out of 18171
+    http_req_duration..............: avg=23.16ms min=249.35µs med=1.39ms max=1.28s p(90)=72.57ms p(95)=111.36ms
+    http_req_failed................: 0.00%  0 out of 18171
+    dropped_iterations.............: 187    3.116516/s
+    iterations.....................: 17814  296.885694/s
+mensagens aceitas | 17814
+entregues (sent) | 17814
+dead | 0
+sem linha na outbox | 0
+tentativas extras | 922
+janela de entrega (s) | 61.9
+vazão de entrega (msg/s) | 287.9
+ponta a ponta p50/p95/p99 (ms) | 172 / 1864 / 2013
+provedor: {"accepted":17814,"duplicates":0,"failures_injected":922,"order_violations":0}

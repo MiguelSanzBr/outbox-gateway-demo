@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: outbox
+      POSTGRES_PASSWORD: outbox
+      POSTGRES_DB: outbox
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "outbox"]
+      interval: 1s
+      retries: 30
+
+  mockprovider:
+    build: .
+    command: ["/mockprovider"]
+    environment:
+      LATENCY: ${MOCK_LATENCY:-80ms}
+      JITTER: ${MOCK_JITTER:-120ms}
+      FAIL_RATE: ${MOCK_FAIL_RATE:-0.05}
+    ports: ["9090:9090"]
+
+  gateway:
+    build: .
+    command: ["/gateway"]
+    environment:
+      DATABASE_URL: postgres://outbox:outbox@postgres:5432/outbox
+      PROVIDER_URL: http://mockprovider:9090/v1/messages
+      WORKERS: ${WORKERS:-16}
+      LEASE: ${LEASE:-10s}
+      REAP_INTERVAL: 2s
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      mockprovider: { condition: service_started }
+
+  k6:
+    image: grafana/k6:1.3.0
+    profiles: ["load"]
+    command: ["run", "/load/send.js"]
+    environment:
+      BASE_URL: http://gateway:8080
+      RATE: ${RATE:-200}
+      DURATION: ${DURATION:-60s}
+      RECIPIENTS: ${RECIPIENTS:-1000}
+    volumes: ["./load:/load:ro"]

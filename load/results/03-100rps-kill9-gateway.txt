@@ -1,0 +1,21 @@
+# 03-100rps-kill9-gateway: RATE=100 WORKERS=16, SIGKILL no gateway aos 20s, religado aos 25s
+              * ingest: 100.00 iterations/s for 1m0s (maxVUs: 50-200, gracefulStop: 30s)
+    checks_succeeded...: 99.70% 5712 out of 5729
+    checks_failed......: 0.29%  17 out of 5729
+    ✗ aceita (202)
+      ↳  99% — ✓ 5599 / ✗ 17
+    http_req_duration..............: avg=10.1ms   min=0s       med=1.31ms max=525.25ms p(90)=33.9ms  p(95)=55.1ms 
+    http_req_failed................: 0.29%  17 out of 5729
+    dropped_iterations.............: 385    6.416422/s
+    iterations.....................: 5616   93.59643/s
+mensagens aceitas | 5599
+entregues (sent) | 5599
+dead | 0
+sem linha na outbox | 0
+tentativas extras | 314
+janela de entrega (s) | 63.7
+vazão de entrega (msg/s) | 87.9
+ponta a ponta p50/p95/p99 (ms) | 2718 / 4137 / 4337
+provedor: {"accepted":5599,"duplicates":14,"failures_injected":300,"order_violations":0}
+gateway-1  | {"time":"2026-10-17T00:14:42.399657807Z","level":"WARN","msg":"leases expirados devolvidos à fila","component":"reaper","rows":11}
+gateway-1  | {"time":"2026-10-17T00:14:44.353556417Z","level":"WARN","msg":"leases expirados devolvidos à fila","component":"reaper","rows":3}

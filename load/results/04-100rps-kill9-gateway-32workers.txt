@@ -1,0 +1,20 @@
+# 04-100rps-kill9-gateway-32workers: RATE=100 WORKERS=32, SIGKILL no gateway aos 20s, religado aos 25s
+              * ingest: 100.00 iterations/s for 1m0s (maxVUs: 50-200, gracefulStop: 30s)
+    checks_succeeded...: 99.54% 5703 out of 5729
+    checks_failed......: 0.45%  26 out of 5729
+    ✗ aceita (202)
+      ↳  99% — ✓ 5590 / ✗ 26
+    http_req_duration..............: avg=1.51ms   min=0s       med=1.17ms max=66.38ms p(90)=1.8ms  p(95)=2.03ms
+    http_req_failed................: 0.45%  26 out of 5729
+    dropped_iterations.............: 385    6.416408/s
+    iterations.....................: 5616   93.596225/s
+mensagens aceitas | 5590
+entregues (sent) | 5590
+dead | 0
+sem linha na outbox | 0
+tentativas extras | 292
+janela de entrega (s) | 60.2
+vazão de entrega (msg/s) | 92.9
+ponta a ponta p50/p95/p99 (ms) | 151 / 325 / 523
+provedor: {"accepted":5590,"duplicates":19,"failures_injected":272,"order_violations":0}
+"rows":21 

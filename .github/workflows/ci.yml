@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: outbox
+          POSTGRES_PASSWORD: outbox
+          POSTGRES_DB: outbox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U outbox"
+          --health-interval 2s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://outbox:outbox@localhost:5432/outbox
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+      - name: testes + cobertura
+        run: |
+          # testdb é helper só de teste, fica fora da conta
+          pkgs=$(go list ./... | grep -v /internal/testdb | paste -sd,)
+          go test -race -count=1 -v -coverpkg="$pkgs" -coverprofile=cover.out ./...
+      - name: gate de 100% de cobertura
+        run: |
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {print $3}')
+          echo "cobertura: $total"
+          [ "$total" = "100.0%" ] || { go tool cover -func=cover.out | grep -v '100.0%'; exit 1; }
+      - run: docker build .
