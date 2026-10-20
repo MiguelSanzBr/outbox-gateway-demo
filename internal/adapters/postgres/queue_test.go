@@ -272,3 +272,52 @@ func TestRequeueDead(t *testing.T) {
 		t.Fatalf("redrive sem cabeça: status=%s err=%v, esperado pending", status(t, store, bia), err)
 	}
 }
+
+// Os estados vão como literal no SQL (índice parcial só casa com constante): o CHECK
+// da tabela tem q aceitar exatamente os do domínio.
+func TestSQLStatusesMatchDomain(t *testing.T) {
+	pool, _ := testdb.New(t, "t_statuses")
+	var def string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'outbox_status_check' AND conrelid = 'outbox'::regclass`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []domain.Status{domain.Queued, domain.Pending, domain.Sending, domain.Sent, domain.Dead} {
+		if !strings.Contains(def, "'"+string(s)+"'") {
+			t.Errorf("CHECK %s sem o estado %s", def, s)
+		}
+	}
+	if n := strings.Count(def, "'"); n != 2*5 {
+		t.Errorf("CHECK %s com estado q o domínio não tem", def)
+	}
+}
+
+// Se promover a próxima falha, o sent da cabeça também não fica: senão o destinatário
+// ficaria sem cabeça e a fila dele parada pra sempre.
+func TestFinishRollsBackWhenPromoteFails(t *testing.T) {
+	pool, store := testdb.New(t, "t_promotefail")
+	ana1 := enqueue(t, store, "ana1", "ana")
+	enqueue(t, store, "ana2", "ana")
+	c := wantClaim(t, store, "ana1")
+	testdb.Sabotage(t, pool, "outbox", `IF OLD.status = 'queued' THEN RAISE EXCEPTION 'boom'; END IF; RETURN NEW;`)
+	tr, _ := c.Complete()
+	if err := store.Finish(context.Background(), c.ID, tr); err == nil {
+		t.Fatal("Finish sem erro com a promoção quebrada")
+	}
+	if got := status(t, store, ana1); got != domain.Sending {
+		t.Fatalf("ana1 = %s, esperado sending (rollback inteiro)", got)
+	}
+}
+
+// Redrive com o UPDATE falhando devolve o erro e não muda nada.
+func TestRequeueSurfacesDBError(t *testing.T) {
+	pool, store := testdb.New(t, "t_requeuefail")
+	id := enqueue(t, store, "ana1", "ana")
+	c := wantClaim(t, store, "ana1")
+	tr, err := c.Fail(domain.Permanent(errors.New("HTTP 400")), noBackoff)
+	finish(t, store, c, tr, err)
+	testdb.Sabotage(t, pool, "outbox", `RAISE EXCEPTION 'boom';`)
+	if err := store.Requeue(context.Background(), id); err == nil || errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("err=%v, esperado o erro do banco", err)
+	}
+}

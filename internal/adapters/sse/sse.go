@@ -22,6 +22,7 @@ type Event struct {
 	Status    domain.Status `json:"status"`
 	Attempts  int           `json:"attempts"`
 	Worker    *int          `json:"worker"`
+	Version   int64         `json:"version"`
 	LastError *string       `json:"last_error"`
 }
 

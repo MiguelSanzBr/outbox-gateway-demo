@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,6 +19,7 @@ type notification struct {
 	Status    domain.Status `json:"status"`
 	Attempts  int           `json:"attempts"`
 	Worker    *int          `json:"worker"`
+	Version   int64         `json:"version"`
 	LastError *string       `json:"last_error"`
 }
 
@@ -32,7 +34,7 @@ func (s *Store) Listen(ctx context.Context) (<-chan app.Change, error) {
 	}
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listen: %w", err)
 	}
 	ch := make(chan app.Change)
 	go func() {
@@ -55,14 +57,14 @@ func (s *Store) Listen(ctx context.Context) (<-chan app.Change, error) {
 // daí pra frente ele se atualiza pelo Listen.
 func (s *Store) Recent(ctx context.Context, n int) ([]app.Change, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT message_id, recipient, status, attempts, worker, left(last_error, 200)
+		SELECT message_id, recipient, status, attempts, worker, version, left(last_error, 200)
 		FROM outbox ORDER BY id DESC LIMIT $1`, n)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("recent: %w", err)
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (app.Change, error) {
 		var c app.Change
-		err := r.Scan(&c.ID, &c.Recipient, &c.Status, &c.Attempts, &c.Worker, &c.LastError)
+		err := r.Scan(&c.ID, &c.Recipient, &c.Status, &c.Attempts, &c.Worker, &c.Version, &c.LastError)
 		return c, err
 	})
 }

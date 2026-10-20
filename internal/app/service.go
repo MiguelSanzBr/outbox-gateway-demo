@@ -93,7 +93,29 @@ func (s *Service) Deliver(ctx context.Context, c *domain.OutboxEntry) (t domain.
 	return t, sendErr, err
 }
 
-// ReapExpiredLeases devolve à fila as linhas de worker morto ou travado.
+// reapBatch é quantas linhas o reaper trata por rodada; o resto fica pra próxima.
+const reapBatch = 100
+
+// ReapExpiredLeases aplica a regra do domínio (Expire) nas linhas de worker morto ou
+// travado: volta com backoff ou, na última tentativa, vira dead com resultado incerto.
 func (s *Service) ReapExpiredLeases(ctx context.Context) (int64, error) {
-	return s.repo.Reap(ctx, s.cfg.Retry.MaxAttempts)
+	expired, err := s.repo.Expired(ctx, reapBatch)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, e := range expired {
+		t, err := e.Expire(s.cfg.Retry)
+		if err == nil {
+			err = s.repo.Finish(ctx, e.ID, t)
+		}
+		// lease perdido: o worker finalizou entre a busca e aqui, não tem o q devolver
+		if err != nil && !errors.Is(err, domain.ErrLeaseLost) {
+			return n, err
+		}
+		if err == nil {
+			n++
+		}
+	}
+	return n, nil
 }

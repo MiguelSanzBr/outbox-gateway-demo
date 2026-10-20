@@ -44,6 +44,7 @@ func TestListRecentMessages(t *testing.T) {
 		Status    string  `json:"status"`
 		Attempts  int     `json:"attempts"`
 		Worker    *int    `json:"worker"`
+		Version   *int64  `json:"version"`
 		LastError *string `json:"last_error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
@@ -52,7 +53,8 @@ func TestListRecentMessages(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || len(got) != 3 || got[0].ID != 3 || got[2].ID != 1 {
 		t.Fatalf("HTTP %d %+v, esperado as 3 da mais nova pra mais velha", resp.StatusCode, got)
 	}
-	if got[0].Recipient != "ana" || got[0].Status != "pending" || got[0].Worker != nil {
+	// as três são da ana: a mais velha é a cabeça, as outras esperam em queued
+	if got[0].Recipient != "ana" || got[0].Status != "queued" || got[2].Status != "pending" || got[0].Worker != nil || got[0].Version == nil {
 		t.Fatalf("linha: %+v", got[0])
 	}
 }

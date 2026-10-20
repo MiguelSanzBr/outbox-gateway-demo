@@ -10,13 +10,17 @@ import (
 )
 
 // OutboxRepository guarda mensagens e outbox. As garantias de concorrência (SKIP LOCKED,
-// ordem por destinatário, fencing pelo token) ficam na implementação, pq só o banco
-// enxerga todos os workers ao mesmo tempo.
+// uma cabeça por destinatário, fencing pelo token) ficam na implementação, pq só o banco
+// enxerga todos os workers ao mesmo tempo. As decisões de estado vêm do domínio.
 type OutboxRepository interface {
 	Enqueue(ctx context.Context, m domain.Message) (id int64, created bool, err error)
 	Claim(ctx context.Context, worker int, lease time.Duration) (*domain.OutboxEntry, error)
+	// Finish grava t se a linha ainda tiver o token de t, senão devolve domain.ErrLeaseLost.
 	Finish(ctx context.Context, id int64, t domain.Transition) error
-	Reap(ctx context.Context, maxAttempts int) (int64, error)
+	// Expired lista até limit linhas em sending com o lease vencido.
+	Expired(ctx context.Context, limit int) ([]domain.OutboxEntry, error)
+	// Requeue devolve uma dead à fila (domain.ErrInvalidTransition se ela não for dead).
+	Requeue(ctx context.Context, id int64) error
 	Get(ctx context.Context, id int64) (*MessageState, error)
 	Recent(ctx context.Context, n int) ([]Change, error)
 }
@@ -63,5 +67,6 @@ type Change struct {
 	Status    domain.Status
 	Attempts  int
 	Worker    *int
+	Version   int64 // soma 1 a cada mudança da linha: a maior é a mais nova
 	LastError *string
 }
