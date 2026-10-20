@@ -5,7 +5,6 @@ package postgres
 
 import (
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
 	"time"
@@ -16,17 +15,9 @@ import (
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
-//go:embed schema.sql
-var schema string
-
 type Store struct{ pool *pgxpool.Pool }
 
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
-
-func (s *Store) Migrate(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, schema)
-	return err
-}
 
 // Enqueue grava a mensagem e a linha da outbox atomicamente. Repetir a mesma
 // chave com o mesmo conteúdo devolve o id original com created=false.

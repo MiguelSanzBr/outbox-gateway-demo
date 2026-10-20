@@ -78,3 +78,28 @@ func TestMigrateUpgradesPreVersioningDB(t *testing.T) {
 		t.Fatalf("schema_migrations = %v", v)
 	}
 }
+
+// Cada passo da migração devolve o erro com o contexto, sem gravar versão pela metade.
+func TestMigrateSurfacesStepErrors(t *testing.T) {
+	cases := []struct{ name, setup string }{
+		// enum não ocupa pg_class: o IF NOT EXISTS não vê e o CREATE TABLE bate no tipo
+		{"schema_migrations não dá pra criar", `CREATE TYPE schema_migrations AS ENUM ('x')`},
+		{"schema_migrations com outro formato", `CREATE TABLE schema_migrations (version TEXT)`},
+		{"migração quebra no meio", `CREATE VIEW messages AS SELECT 1 AS id`},
+		{"registro da versão falha", `CREATE TABLE schema_migrations (version INT PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT now());
+			CREATE FUNCTION nope() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'boom'; END $$;
+			CREATE TRIGGER nope BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION nope();`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := testdb.Pool(t, "t_migrate_err")
+			if _, err := pool.Exec(ctx, c.setup); err != nil {
+				t.Fatal(err)
+			}
+			if err := postgres.NewStore(pool).Migrate(ctx); err == nil {
+				t.Fatal("Migrate sem erro")
+			}
+		})
+	}
+}
