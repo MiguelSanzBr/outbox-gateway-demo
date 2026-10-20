@@ -15,6 +15,7 @@ import (
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/httpapi"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/provider"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/sse"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
@@ -69,7 +70,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 
 	sender := provider.HTTPSender{URL: os.Getenv("PROVIDER_URL"), Client: &http.Client{}}
-	svc := app.NewService(store, sender, store, appCfg)
+	// um LISTEN só pro processo, dividido entre os streams SSE
+	svc := app.NewService(store, sender, sse.NewHub(store, envInt("SSE_MAX_STREAMS", 32), 256), appCfg)
 	fleet := worker.Start(ctx, svc, cfg, log)
 	var demo *app.Demo
 	if os.Getenv("DEMO_ADMIN") == "1" {

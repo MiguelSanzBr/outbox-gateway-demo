@@ -15,7 +15,10 @@ import (
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
-const recentLimit = 500
+const (
+	recentLimit  = 500
+	sseHeartbeat = 15 * time.Second // abaixo dos 60 s de read timeout do nginx
+)
 
 // New monta as rotas. ctx é a vida do servidor (fecha os streams SSE no shutdown).
 // demo nil desliga /v1/admin.
@@ -25,7 +28,7 @@ func New(ctx context.Context, svc *app.Service, demo *app.Demo, log *slog.Logger
 	mux.HandleFunc("POST /v1/messages", h.create)
 	mux.HandleFunc("GET /v1/messages", h.list)
 	mux.HandleFunc("GET /v1/messages/{id}", h.get)
-	mux.Handle("GET /v1/events", sse.Handler(ctx, svc, log))
+	mux.Handle("GET /v1/events", sse.Handler(ctx, svc, sseHeartbeat, log))
 	if demo != nil {
 		mux.HandleFunc("GET /v1/admin/workers", func(w http.ResponseWriter, _ *http.Request) {
 			type worker struct {
