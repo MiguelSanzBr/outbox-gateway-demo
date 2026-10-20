@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -9,6 +11,8 @@ import (
 	"testing"
 	"time"
 )
+
+var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 func freeAddr(t *testing.T) string {
 	t.Helper()
@@ -58,15 +62,17 @@ func TestMainGracefulShutdown(t *testing.T) {
 }
 
 func TestMainExitsWithOneOnError(t *testing.T) {
-	t.Setenv("ADDR", "porta-que-nao-existe")
-	t.Setenv("LATENCY", "")
-	exited := -1
-	exit = func(code int) { exited = code }
-	t.Cleanup(func() { exit = os.Exit })
+	for _, c := range []struct{ addr, failRate string }{{"porta-que-nao-existe", ""}, {"127.0.0.1:0", "x"}} {
+		t.Setenv("ADDR", c.addr)
+		t.Setenv("FAIL_RATE", c.failRate)
+		exited := -1
+		exit = func(code int) { exited = code }
+		t.Cleanup(func() { exit = os.Exit })
 
-	main()
-	if exited != 1 {
-		t.Fatalf("exit = %d, esperado 1", exited)
+		main()
+		if exited != 1 {
+			t.Fatalf("ADDR=%s FAIL_RATE=%s: exit = %d, esperado 1", c.addr, c.failRate, exited)
+		}
 	}
 }
 
@@ -76,7 +82,7 @@ func TestDefaultAddr(t *testing.T) {
 	if l, err := net.Listen("tcp", ":9090"); err == nil {
 		defer func() { _ = l.Close() }()
 	}
-	if err := run(t.Context()); err == nil {
+	if err := run(t.Context(), quiet); err == nil {
 		t.Fatal("esperava erro de porta em uso no :9090")
 	}
 }

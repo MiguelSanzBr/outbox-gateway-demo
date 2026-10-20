@@ -4,7 +4,8 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,32 +20,67 @@ import (
 var exit = os.Exit
 
 func main() {
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx); err != nil {
-		log.Print(err)
+	if err := run(ctx, log); err != nil {
+		log.Error("encerrando", "err", err)
 		exit(1)
 	}
 }
 
-func run(ctx context.Context) error {
-	latency, _ := time.ParseDuration(os.Getenv("LATENCY"))
-	jitter, _ := time.ParseDuration(os.Getenv("JITTER"))
-	failRate, _ := strconv.ParseFloat(os.Getenv("FAIL_RATE"), 64)
-	addr := os.Getenv("ADDR")
-	if addr == "" {
-		addr = ":9090"
-	}
+type config struct {
+	addr     string
+	provider mockprovider.Config
+}
 
-	p := mockprovider.New(mockprovider.Config{Latency: latency, Jitter: jitter, FailRate: failRate})
-	log.Printf("mockprovider em %s latency=%s jitter=%s fail_rate=%.2f", addr, latency, jitter, failRate)
-	srv := &http.Server{Addr: addr, Handler: p.Handler(), ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		<-ctx.Done()
-		_ = srv.Shutdown(context.Background())
-	}()
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+func loadConfig(getenv func(string) string) (config, error) {
+	var errs []error
+	dur := func(k string) time.Duration {
+		v := getenv(k)
+		if v == "" {
+			return 0
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			errs = append(errs, fmt.Errorf("%s=%q precisa ser uma duração >= 0 (ex.: 80ms)", k, v))
+		}
+		return d
+	}
+	c := config{addr: getenv("ADDR"), provider: mockprovider.Config{Latency: dur("LATENCY"), Jitter: dur("JITTER")}}
+	if c.addr == "" {
+		c.addr = ":9090"
+	}
+	if v := getenv("FAIL_RATE"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f < 0 || f > 1 {
+			errs = append(errs, fmt.Errorf("FAIL_RATE=%q precisa ficar entre 0 e 1", v))
+		}
+		c.provider.FailRate = f
+	}
+	return c, errors.Join(errs...)
+}
+
+func run(ctx context.Context, log *slog.Logger) error {
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
 		return err
 	}
+	p := mockprovider.New(cfg.provider)
+	log.Info("mockprovider", "addr", cfg.addr, "latency", cfg.provider.Latency, "jitter", cfg.provider.Jitter, "fail_rate", cfg.provider.FailRate)
+	srv := &http.Server{Addr: cfg.addr, Handler: p.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	err = srv.ListenAndServe()
+	if !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	<-drained
 	return nil
 }
