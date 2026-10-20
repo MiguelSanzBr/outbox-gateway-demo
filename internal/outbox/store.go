@@ -80,7 +80,7 @@ type Claim struct {
 
 // Claim reivindica a mensagem pronta mais antiga cujo destinatário não tem
 // nenhuma mensagem anterior em aberto. Devolve (nil, nil) se não houver nada.
-func (s *Store) Claim(ctx context.Context, lease time.Duration) (*Claim, error) {
+func (s *Store) Claim(ctx context.Context, worker int, lease time.Duration) (*Claim, error) {
 	var c Claim
 	err := s.pool.QueryRow(ctx, `
 		WITH next AS (
@@ -101,11 +101,12 @@ func (s *Store) Claim(ctx context.Context, lease time.Duration) (*Claim, error) 
 		SET status = 'sending',
 		    attempts = o.attempts + 1,
 		    lease_token = gen_random_uuid(),
-		    lease_until = now() + $1 * interval '1 millisecond'
+		    lease_until = now() + $1 * interval '1 millisecond',
+		    worker = $2
 		FROM next, messages m
 		WHERE o.id = next.id AND m.id = o.message_id
 		RETURNING o.id, o.lease_token::text, o.attempts, m.idempotency_key, m.recipient, m.body`,
-		lease.Milliseconds()).Scan(&c.ID, &c.LeaseToken, &c.Attempts, &c.IdempotencyKey, &c.Recipient, &c.Body)
+		lease.Milliseconds(), worker).Scan(&c.ID, &c.LeaseToken, &c.Attempts, &c.IdempotencyKey, &c.Recipient, &c.Body)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

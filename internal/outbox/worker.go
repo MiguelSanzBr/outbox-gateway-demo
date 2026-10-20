@@ -39,7 +39,7 @@ func Run(ctx context.Context, store *Store, sender Sender, cfg Config, log *slog
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			work(ctx, store, sender, cfg, log.With("worker", i))
+			work(ctx, i, store, sender, cfg, log.With("worker", i))
 		}()
 	}
 	wg.Add(1)
@@ -50,9 +50,9 @@ func Run(ctx context.Context, store *Store, sender Sender, cfg Config, log *slog
 	wg.Wait()
 }
 
-func work(ctx context.Context, store *Store, sender Sender, cfg Config, log *slog.Logger) {
+func work(ctx context.Context, id int, store *Store, sender Sender, cfg Config, log *slog.Logger) {
 	for ctx.Err() == nil {
-		c, err := store.Claim(ctx, cfg.Lease)
+		c, err := store.Claim(ctx, id, cfg.Lease)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Error("claim", "err", err)

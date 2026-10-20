@@ -31,10 +31,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS outbox_one_inflight ON outbox (recipient) WHER
 -- Busca do reaper.
 CREATE INDEX IF NOT EXISTS outbox_lease ON outbox (lease_until) WHERE status = 'sending';
 
+-- Último worker q reivindicou a linha, pra o painel mostrar quem está com ela.
+-- ALTER separado pq o CREATE TABLE IF NOT EXISTS não mexe em banco criado antes dessa coluna.
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS worker INT;
+
 -- Formato do evento do painel. Uma função só pra o NOTIFY e a listagem não divergirem.
 CREATE OR REPLACE FUNCTION outbox_event(o outbox) RETURNS json LANGUAGE sql STABLE AS $$
     SELECT json_build_object('id', o.message_id, 'recipient', o.recipient, 'status', o.status,
-                             'attempts', o.attempts, 'last_error', left(o.last_error, 200))
+                             'attempts', o.attempts, 'worker', o.worker, 'last_error', left(o.last_error, 200))
 $$;
 
 -- Toda mudança de estado vira NOTIFY. Só sai no commit, na ordem dos commits, e se ninguém estiver ouvindo se perde.
