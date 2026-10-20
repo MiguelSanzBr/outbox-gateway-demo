@@ -22,7 +22,9 @@ export const options = {
       maxVUs: 200,
     },
   },
-  thresholds: { checks: ['rate>0.99'] },
+  // dropped_iterations > 0 quer dizer q o k6 não conseguiu manter a taxa: o número de
+  // req/s da tabela seria mentira
+  thresholds: { checks: ['rate>0.99'], dropped_iterations: ['count==0'] },
 };
 
 export default function () {

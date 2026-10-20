@@ -1,11 +1,16 @@
 #!/bin/sh
-# Espera a outbox esvaziar e imprime o resultado do teste de carga:
-# o que entrou, o que foi entregue, latência ponta a ponta e contadores do provedor.
+# Espera a outbox esvaziar e imprime o resultado do teste de carga: o que entrou, o que
+# foi entregue, latência ponta a ponta e contadores do provedor. Sai com 1 se perdeu
+# mensagem (aceita q não virou sent nem dead, ou sem linha na outbox) ou se o provedor
+# viu ordem trocada. Reenvio descartado pelo provedor não é falha: é o at-least-once.
 set -eu
 
 psql() { docker compose exec -T postgres psql -U outbox -d outbox -At "$@"; }
 
-while [ "$(psql -c "SELECT count(*) FROM outbox WHERE status IN ('pending','sending')")" != "0" ]; do
+timeout=${DRAIN_TIMEOUT:-300}
+while [ "$(psql -c "SELECT count(*) FROM outbox WHERE status IN ('queued','pending','sending')")" != "0" ]; do
+  timeout=$((timeout - 1))
+  [ "$timeout" -gt 0 ] || { echo "a outbox não esvaziou em ${DRAIN_TIMEOUT:-300} s"; exit 1; }
   sleep 1
 done
 
@@ -25,4 +30,12 @@ SELECT 'ponta a ponta p50/p95/p99 (ms)',
   FROM outbox o JOIN messages m ON m.id = o.message_id WHERE o.status = 'sent';
 SQL
 
-echo "provedor: $(curl -s localhost:9090/stats)"
+stats=$(curl -s localhost:9090/stats)
+echo "provedor: $stats"
+
+lost=$(psql -c "SELECT (SELECT count(*) FROM messages) - (SELECT count(*) FROM outbox WHERE status IN ('sent','dead'))
+  + (SELECT count(*) FROM messages m LEFT JOIN outbox o ON o.message_id = m.id WHERE o.id IS NULL)")
+violations=$(echo "$stats" | sed -n 's/.*"order_violations":\([0-9]*\).*/\1/p')
+[ "$lost" = "0" ] || { echo "FALHOU: $lost mensagem(ns) perdida(s)"; exit 1; }
+[ "$violations" = "0" ] || { echo "FALHOU: $violations violação(ões) de ordem"; exit 1; }
+echo "ok: nada perdido, ordem preservada"
