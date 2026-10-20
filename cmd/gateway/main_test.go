@@ -149,3 +149,49 @@ func TestMainExitsWithOneOnError(t *testing.T) {
 		t.Fatalf("exit = %d, esperado 1", exited)
 	}
 }
+
+// Admin da demo só existe com DEMO_ADMIN=1. E um SSE aberto não pode segurar o shutdown
+// (sem fechar os streams, o Shutdown espera os 10 s inteiros).
+func TestRunDemoAdminFlagAndSSEShutdown(t *testing.T) {
+	needDB(t)
+	for _, c := range []struct {
+		flag string
+		want int
+	}{{"", http.StatusNotFound}, {"0", http.StatusNotFound}, {"1", http.StatusOK}} {
+		t.Run("DEMO_ADMIN="+c.flag, func(t *testing.T) {
+			addr := freeAddr(t)
+			t.Setenv("ADDR", addr)
+			t.Setenv("WORKERS", "2")
+			t.Setenv("DEMO_ADMIN", c.flag)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error)
+			go func() { done <- run(ctx, quiet) }()
+			waitHealthy(t, addr)
+
+			resp, err := http.Get("http://" + addr + "/v1/admin/workers")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != c.want {
+				t.Fatalf("/v1/admin/workers: HTTP %d, esperado %d", resp.StatusCode, c.want)
+			}
+
+			sse, err := http.Get("http://" + addr + "/v1/events")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = sse.Body.Close() }()
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("shutdown preso no stream SSE")
+			}
+		})
+	}
+}
