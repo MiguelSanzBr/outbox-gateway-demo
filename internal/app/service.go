@@ -12,7 +12,7 @@ import (
 var ErrWorkerKilled = errors.New("worker derrubado")
 
 type Config struct {
-	Lease time.Duration // precisa cobrir o envio mais lento; o envio usa no máximo Lease/2
+	Lease time.Duration // precisa cobrir o envio mais lento: o envio usa até Lease/2 e a finalização até Lease/4
 	Retry domain.RetryPolicy
 }
 
@@ -50,17 +50,22 @@ func (s *Service) StreamEvents(ctx context.Context) (<-chan Change, error) {
 	return s.events.Listen(ctx)
 }
 
-// ClaimNext reivindica a próxima linha liberada pela regra de ordem, ou nil se não tiver.
+// ClaimNext reivindica a próxima cabeça pronta, ou nil se não tiver. O claim não é
+// cortado pelo shutdown: um UPDATE cancelado no meio pode ter commitado sem a gente
+// saber, e a linha ficaria presa em sending até o reaper. Se o shutdown chegou, o
+// Deliver devolve a linha sem gastar a tentativa.
 func (s *Service) ClaimNext(ctx context.Context, worker int) (*domain.OutboxEntry, error) {
-	return s.repo.Claim(ctx, worker, s.cfg.Lease)
+	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.Lease/4)
+	defer cancel()
+	return s.repo.Claim(claimCtx, worker, s.cfg.Lease)
 }
 
-func (s *Service) CompleteDelivery(ctx context.Context, c *domain.OutboxEntry) error {
+func (s *Service) CompleteDelivery(ctx context.Context, c *domain.OutboxEntry) (domain.Transition, error) {
 	t, err := c.Complete()
 	if err != nil {
-		return err
+		return t, err
 	}
-	return s.repo.Finish(ctx, c.ID, t)
+	return t, s.repo.Finish(ctx, c.ID, t)
 }
 
 // FailDelivery devolve a linha à fila depois do backoff, ou encerra como dead.
@@ -73,25 +78,53 @@ func (s *Service) FailDelivery(ctx context.Context, c *domain.OutboxEntry, cause
 }
 
 // Deliver envia c e grava o resultado. sendErr é o erro do provedor, err o da gravação.
-// Worker derrubado no meio do envio não grava nada: a linha fica em sending pro reaper.
+//
+// O envio fica solto do ctx do processo: SIGTERM no meio não corta (o shutdown espera
+// ele terminar), senão o cancel vira falha e queima tentativa, ou mata a mensagem na
+// última. O prazo é metade do lease, pra o reaper nunca devolver linha ainda em voo.
+// Só o worker derrubado da demo corta no meio, e aí nada é gravado: a linha fica em
+// sending pro reaper, como num kill -9. Se o shutdown chegou antes do envio, a linha
+// volta pra fila sem gastar a tentativa.
 func (s *Service) Deliver(ctx context.Context, c *domain.OutboxEntry) (t domain.Transition, sendErr, err error) {
-	// Envio limitado a metade do lease: o reaper não devolve a linha à fila enquanto ela ainda está em voo.
-	sendCtx, cancel := context.WithTimeout(ctx, s.cfg.Lease/2)
+	// a finalização tem prazo próprio e também não é cortada pelo shutdown
+	doneCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), s.cfg.Lease/4)
+	}
+	if ctx.Err() != nil && !killed(ctx) {
+		fctx, cancel := doneCtx()
+		defer cancel()
+		t, err = c.Release()
+		if err == nil {
+			err = s.repo.Finish(fctx, c.ID, t)
+		}
+		return t, nil, err
+	}
+
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.Lease/2)
+	stop := context.AfterFunc(ctx, func() {
+		if killed(ctx) {
+			cancel()
+		}
+	})
 	sendErr = s.sender.Send(sendCtx, c)
+	stop()
 	cancel()
-	if errors.Is(context.Cause(ctx), ErrWorkerKilled) {
+	if killed(ctx) {
 		return t, sendErr, ErrWorkerKilled
 	}
 
-	// Finaliza mesmo durante o shutdown, senão a linha fica presa até o lease expirar.
-	doneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
+	// Lease/2 do envio + Lease/4 daqui ainda cabem no lease
+	fctx, cancelDone := doneCtx()
+	defer cancelDone()
 	if sendErr == nil {
-		return t, nil, s.CompleteDelivery(doneCtx, c)
+		t, err = s.CompleteDelivery(fctx, c)
+		return t, nil, err
 	}
-	t, err = s.FailDelivery(doneCtx, c, sendErr)
+	t, err = s.FailDelivery(fctx, c, sendErr)
 	return t, sendErr, err
 }
+
+func killed(ctx context.Context) bool { return errors.Is(context.Cause(ctx), ErrWorkerKilled) }
 
 // reapBatch é quantas linhas o reaper trata por rodada; o resto fica pra próxima.
 const reapBatch = 100

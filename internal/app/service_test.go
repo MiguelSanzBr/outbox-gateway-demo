@@ -33,7 +33,7 @@ func (r *fakeRepo) Finish(_ context.Context, id int64, t domain.Transition) erro
 func TestDeliveryRejectsInvalidTransition(t *testing.T) {
 	svc := app.NewService(nil, nil, nil, app.Config{})
 	done := &domain.OutboxEntry{ID: 1, Status: domain.Sent}
-	if err := svc.CompleteDelivery(context.Background(), done); !errors.Is(err, domain.ErrInvalidTransition) {
+	if _, err := svc.CompleteDelivery(context.Background(), done); !errors.Is(err, domain.ErrInvalidTransition) {
 		t.Fatalf("CompleteDelivery: err=%v", err)
 	}
 	if _, err := svc.FailDelivery(context.Background(), done, errors.New("x")); !errors.Is(err, domain.ErrInvalidTransition) {
