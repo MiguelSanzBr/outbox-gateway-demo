@@ -292,6 +292,23 @@ func TestWorkersSurviveDBOutage(t *testing.T) {
 	logs.waitFor(t, "msg=reap")
 }
 
+// Com o banco fora, o worker espera mais a cada erro seguido em vez de martelar o banco
+// e o log no ritmo do poll.
+func TestClaimErrorsBackOff(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workers = 1
+	cfg.PollInterval = time.Millisecond
+	cfg.ReapInterval = time.Hour
+	logs := runWorkers(t, testdb.Broken(t, "t_claimbackoff"), funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg)
+	time.Sleep(300 * time.Millisecond)
+	logs.mu.Lock()
+	n := strings.Count(logs.buf.String(), "msg=claim")
+	logs.mu.Unlock()
+	if n == 0 || n > 20 {
+		t.Fatalf("%d erros de claim em 300 ms com poll de 1 ms, esperado poucos (backoff)", n)
+	}
+}
+
 // Worker demorou mais q o lease e o reaper devolveu a linha: ele não pode marcar sent com o token velho.
 // A outra tentativa entrega e o attempts mostra as duas.
 func TestWorkerThatLostLeaseDoesNotFinish(t *testing.T) {
