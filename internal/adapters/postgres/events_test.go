@@ -1,4 +1,4 @@
-package outbox_test
+package postgres_test
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
@@ -92,7 +92,7 @@ func TestListenFailsWithDBDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := outbox.NewStore(pool).Listen(context.Background()); err == nil {
+	if _, err := postgres.NewStore(pool).Listen(context.Background()); err == nil {
 		t.Fatal("Listen sem erro com banco fora")
 	}
 }

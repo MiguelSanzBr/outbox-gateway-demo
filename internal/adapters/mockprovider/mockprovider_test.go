@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/mockprovider"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/mockprovider"
 )
 
 func send(h http.Handler, ctx context.Context, key, seq, body string) int {

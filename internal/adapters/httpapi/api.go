@@ -1,5 +1,5 @@
-// Package api expõe a entrada HTTP: valida, grava na outbox e responde 202.
-package api
+// Package httpapi expõe a entrada HTTP: valida, grava na outbox e responde 202.
+package httpapi
 
 import (
 	"context"
@@ -11,8 +11,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 )
 
 const recentLimit = 500
@@ -22,7 +23,7 @@ var heartbeat = 15 * time.Second
 
 // New monta as rotas. ctx é a vida do servidor: quando acaba, os streams SSE fecham,
 // senão o Shutdown fica esperando eles pra sempre. fleet nil desliga /v1/admin.
-func New(ctx context.Context, store *outbox.Store, fleet *outbox.Fleet, log *slog.Logger) http.Handler {
+func New(ctx context.Context, store *postgres.Store, fleet *worker.Fleet, log *slog.Logger) http.Handler {
 	h := handler{ctx: ctx, store: store, log: log}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/messages", h.create)
@@ -51,7 +52,7 @@ func New(ctx context.Context, store *outbox.Store, fleet *outbox.Fleet, log *slo
 
 type handler struct {
 	ctx   context.Context
-	store *outbox.Store
+	store *postgres.Store
 	log   *slog.Logger
 }
 

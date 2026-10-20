@@ -1,4 +1,4 @@
-package outbox_test
+package worker_test
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
@@ -37,7 +37,7 @@ func TestFleetKillMidSendLeavesRowForReaper(t *testing.T) {
 		return nil
 	})
 	runCtx, cancel := context.WithCancel(ctx)
-	fleet := outbox.Start(runCtx, store, sender, cfg, quiet)
+	fleet := worker.Start(runCtx, store, sender, cfg, quiet)
 	t.Cleanup(func() { cancel(); fleet.Wait() })
 
 	select {
@@ -51,7 +51,7 @@ func TestFleetKillMidSendLeavesRowForReaper(t *testing.T) {
 	if fleet.Kill(0) || fleet.Kill(1) || fleet.Kill(-1) {
 		t.Fatal("Kill aceitou worker caído ou inexistente")
 	}
-	if got := fleet.Workers(); !slices.Equal(got, []outbox.WorkerInfo{{ID: 0, Alive: false}}) {
+	if got := fleet.Workers(); !slices.Equal(got, []worker.WorkerInfo{{ID: 0, Alive: false}}) {
 		t.Fatalf("workers: %+v", got)
 	}
 
@@ -86,7 +86,7 @@ func TestFleetKillMidSendLeavesRowForReaper(t *testing.T) {
 	if got := fleet.Workers(); !got[0].Alive {
 		t.Fatalf("workers depois do revive: %+v", got)
 	}
-	waitAllSent(t, pool, 1)
+	testdb.WaitAllSent(t, pool, 1)
 }
 
 // Depois do shutdown não tem o q religar: senão sobe goroutine em cima de pool fechado.
@@ -95,7 +95,7 @@ func TestFleetReviveAfterShutdown(t *testing.T) {
 	cfg := testConfig()
 	cfg.Workers = 2
 	ctx, cancel := context.WithCancel(context.Background())
-	fleet := outbox.Start(ctx, store, funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg, quiet)
+	fleet := worker.Start(ctx, store, funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg, quiet)
 	fleet.Kill(1)
 	cancel()
 	fleet.Wait()

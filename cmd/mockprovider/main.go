@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/mockprovider"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/mockprovider"
 )
 
 // exit é variável só pra o teste conseguir ver o código de saída sem matar o processo.

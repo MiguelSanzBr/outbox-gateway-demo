@@ -1,7 +1,7 @@
-// Package outbox implementa o padrão transactional outbox sobre PostgreSQL:
+// Package postgres é o adapter da outbox no PostgreSQL:
 // a API grava a mensagem e a linha da outbox na mesma transação, e workers
 // reivindicam linhas com FOR UPDATE SKIP LOCKED sob um lease.
-package outbox
+package postgres
 
 import (
 	"context"

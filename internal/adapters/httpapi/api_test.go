@@ -1,4 +1,4 @@
-package api_test
+package httpapi_test
 
 import (
 	"context"
@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/api"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/httpapi"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
 func TestCreateMessage(t *testing.T) {
 	_, store := testdb.New(t, "t_api")
-	srv := httptest.NewServer(api.New(context.Background(), store, nil, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	srv := httptest.NewServer(httpapi.New(context.Background(), store, nil, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	t.Cleanup(srv.Close)
 
 	post := func(key, body string) (int, map[string]any) {
@@ -76,11 +76,11 @@ func TestCreateMessage(t *testing.T) {
 func TestReadEndpointsAndErrors(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	_, store := testdb.New(t, "t_api_read")
-	ok := httptest.NewServer(api.New(context.Background(), store, nil, quiet))
+	ok := httptest.NewServer(httpapi.New(context.Background(), store, nil, quiet))
 	t.Cleanup(ok.Close)
 	pool, broken := testdb.New(t, "t_api_down")
 	pool.Close() // banco fora do ar: a API responde 500 e não vaza o erro do driver
-	down := httptest.NewServer(api.New(context.Background(), broken, nil, quiet))
+	down := httptest.NewServer(httpapi.New(context.Background(), broken, nil, quiet))
 	t.Cleanup(down.Close)
 
 	cases := []struct {

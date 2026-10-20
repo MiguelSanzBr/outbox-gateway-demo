@@ -1,4 +1,4 @@
-package outbox
+package worker
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
@@ -27,7 +28,7 @@ type Config struct {
 }
 
 // Run sobe cfg.Workers workers e um reaper; bloqueia até ctx ser cancelado.
-func Run(ctx context.Context, store *Store, sender Sender, cfg Config, log *slog.Logger) {
+func Run(ctx context.Context, store *postgres.Store, sender Sender, cfg Config, log *slog.Logger) {
 	Start(ctx, store, sender, cfg, log).Wait()
 }
 
@@ -37,7 +38,7 @@ var errKilled = errors.New("worker derrubado")
 // pra demo conseguir derrubar um no meio do envio e religar depois.
 type Fleet struct {
 	ctx    context.Context
-	store  *Store
+	store  *postgres.Store
 	sender Sender
 	cfg    Config
 	log    *slog.Logger
@@ -53,7 +54,7 @@ type WorkerInfo struct {
 }
 
 // Start sobe os workers e o reaper e volta na hora; Wait espera tudo parar depois do cancel de ctx.
-func Start(ctx context.Context, store *Store, sender Sender, cfg Config, log *slog.Logger) *Fleet {
+func Start(ctx context.Context, store *postgres.Store, sender Sender, cfg Config, log *slog.Logger) *Fleet {
 	f := &Fleet{ctx: ctx, store: store, sender: sender, cfg: cfg, log: log, kills: make([]context.CancelCauseFunc, cfg.Workers)}
 	f.mu.Lock()
 	for i := range f.kills {
@@ -127,7 +128,7 @@ func (f *Fleet) Workers() []WorkerInfo {
 	return out
 }
 
-func work(ctx context.Context, id int, store *Store, sender Sender, cfg Config, log *slog.Logger) {
+func work(ctx context.Context, id int, store *postgres.Store, sender Sender, cfg Config, log *slog.Logger) {
 	for ctx.Err() == nil {
 		c, err := store.Claim(ctx, id, cfg.Lease)
 		if err != nil {
@@ -145,7 +146,7 @@ func work(ctx context.Context, id int, store *Store, sender Sender, cfg Config, 
 	}
 }
 
-func process(ctx context.Context, store *Store, sender Sender, cfg Config, log *slog.Logger, c *domain.OutboxEntry) {
+func process(ctx context.Context, store *postgres.Store, sender Sender, cfg Config, log *slog.Logger, c *domain.OutboxEntry) {
 	// Envio limitado a metade do lease: o reaper não devolve a linha à fila enquanto ela ainda está em voo.
 	sendCtx, cancel := context.WithTimeout(ctx, cfg.Lease/2)
 	sendErr := sender.Send(sendCtx, c)
@@ -178,7 +179,7 @@ func process(ctx context.Context, store *Store, sender Sender, cfg Config, log *
 	}
 }
 
-func reap(ctx context.Context, store *Store, cfg Config, log *slog.Logger) {
+func reap(ctx context.Context, store *postgres.Store, cfg Config, log *slog.Logger) {
 	t := time.NewTicker(cfg.ReapInterval)
 	defer t.Stop()
 	for {

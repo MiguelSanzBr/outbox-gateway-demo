@@ -1,30 +1,31 @@
-package outbox_test
+package worker_test
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/mockprovider"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/provider"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/mockprovider"
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-func testConfig() outbox.Config {
-	return outbox.Config{
+func testConfig() worker.Config {
+	return worker.Config{
 		Workers:      8,
 		Lease:        2 * time.Second,
 		PollInterval: 5 * time.Millisecond,
@@ -35,70 +36,61 @@ func testConfig() outbox.Config {
 	}
 }
 
-func startProvider(t *testing.T, cfg mockprovider.Config) (*mockprovider.Provider, outbox.HTTPSender) {
+func startProvider(t *testing.T, cfg mockprovider.Config) (*mockprovider.Provider, provider.HTTPSender) {
 	p := mockprovider.New(cfg)
 	srv := httptest.NewServer(p.Handler())
 	t.Cleanup(srv.Close)
-	return p, outbox.HTTPSender{URL: srv.URL + "/v1/messages", Client: srv.Client()}
+	return p, provider.HTTPSender{URL: srv.URL + "/v1/messages", Client: srv.Client()}
 }
 
-func startWorkers(t *testing.T, store *outbox.Store, sender outbox.Sender, cfg outbox.Config) {
+func startWorkers(t *testing.T, store *postgres.Store, sender worker.Sender, cfg worker.Config) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { outbox.Run(ctx, store, sender, cfg, quiet); close(done) }()
+	go func() { worker.Run(ctx, store, sender, cfg, quiet); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 }
 
-func waitAllSent(t *testing.T, pool *pgxpool.Pool, want int) {
+// logBuffer guarda o log dos workers pra o teste conferir o q eles fizeram.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) waitFor(t *testing.T, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
-		var sent, open int
-		err := pool.QueryRow(context.Background(), `
-			SELECT count(*) FILTER (WHERE status = 'sent'), count(*) FILTER (WHERE status <> 'sent') FROM outbox`).
-			Scan(&sent, &open)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if sent == want && open == 0 {
+		b.mu.Lock()
+		found := strings.Contains(b.buf.String(), msg)
+		b.mu.Unlock()
+		if found {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timeout: sent=%d outros=%d, esperado sent=%d", sent, open, want)
+			t.Fatalf("log sem %q", msg)
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func finishSent(ctx context.Context, store *outbox.Store, c *domain.OutboxEntry) error {
-	tr, err := c.Complete()
-	if err != nil {
-		return err
-	}
-	return store.Finish(ctx, c.ID, tr)
+func runWorkers(t *testing.T, store *postgres.Store, sender worker.Sender, cfg worker.Config) *logBuffer {
+	logs := &logBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { worker.Run(ctx, store, sender, cfg, slog.New(slog.NewTextHandler(logs, nil))); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return logs
 }
 
-func TestEnqueueIsIdempotent(t *testing.T) {
-	pool, store := testdb.New(t, "t_enqueue")
-	ctx := context.Background()
+type funcSender func(ctx context.Context, c *domain.OutboxEntry) error
 
-	id1, created1, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k1", Recipient: "r1", Body: "oi"})
-	if err != nil || !created1 {
-		t.Fatalf("primeiro enqueue: id=%d created=%v err=%v", id1, created1, err)
-	}
-	id2, created2, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k1", Recipient: "r1", Body: "oi"})
-	if err != nil || created2 || id2 != id1 {
-		t.Fatalf("repetição: id=%d created=%v err=%v", id2, created2, err)
-	}
-	if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k1", Recipient: "r1", Body: "outro corpo"}); !errors.Is(err, domain.ErrKeyConflict) {
-		t.Fatalf("conteúdo diferente: err=%v, esperado ErrKeyConflict", err)
-	}
-
-	var rows int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox`).Scan(&rows); err != nil || rows != 1 {
-		t.Fatalf("outbox tem %d linhas (err=%v), esperado 1", rows, err)
-	}
-}
+func (f funcSender) Send(ctx context.Context, c *domain.OutboxEntry) error { return f(ctx, c) }
 
 // Produtores concorrentes, provedor que falha 20% das vezes e 8 workers:
 // tudo entregue, nada duplicado, ordem por destinatário preservada.
@@ -123,7 +115,7 @@ func TestDeliveryNoLossNoDuplicatesInOrder(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	waitAllSent(t, pool, recipients*perRecipient)
+	testdb.WaitAllSent(t, pool, recipients*perRecipient)
 
 	st := provider.Stats()
 	if st.Accepted != recipients*perRecipient || st.Duplicates != 0 || st.OrderViolations != 0 {
@@ -171,7 +163,7 @@ func TestReaperRecoversWorkerKilledMidSend(t *testing.T) {
 	}
 
 	startWorkers(t, store, sender, testConfig())
-	waitAllSent(t, pool, 2)
+	testdb.WaitAllSent(t, pool, 2)
 
 	if got := provider.Delivered("ana"); !slices.Equal(got, []string{"m1", "m2"}) {
 		t.Fatalf("ordem: %v", got)
@@ -182,34 +174,6 @@ func TestReaperRecoversWorkerKilledMidSend(t *testing.T) {
 	var attempts int
 	if err := pool.QueryRow(ctx, `SELECT attempts FROM outbox WHERE id = $1`, dying.ID).Scan(&attempts); err != nil || attempts != 2 {
 		t.Fatalf("attempts de m1 = %d (err=%v), esperado 2", attempts, err)
-	}
-}
-
-// Um worker travado que acorda depois do reaper não consegue finalizar a linha.
-func TestStaleLeaseCannotFinish(t *testing.T) {
-	_, store := testdb.New(t, "t_fencing")
-	ctx := context.Background()
-	if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "bia", Body: "oi"}); err != nil {
-		t.Fatal(err)
-	}
-	stale, err := store.Claim(ctx, 0, time.Millisecond)
-	if err != nil || stale == nil {
-		t.Fatalf("claim: %v", err)
-	}
-	time.Sleep(10 * time.Millisecond)
-	if n, err := store.Reap(ctx, 10); err != nil || n != 1 {
-		t.Fatalf("reap: n=%d err=%v", n, err)
-	}
-	fresh, err := store.Claim(ctx, 0, time.Minute)
-	if err != nil || fresh == nil {
-		t.Fatalf("novo claim: %v", err)
-	}
-
-	if err := finishSent(ctx, store, stale); !errors.Is(err, domain.ErrLeaseLost) {
-		t.Fatalf("sent com lease velho: err=%v, esperado ErrLeaseLost", err)
-	}
-	if err := finishSent(ctx, store, fresh); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -226,7 +190,7 @@ func TestPermanentErrorGoesDead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startWorkers(t, store, outbox.HTTPSender{URL: reject.URL, Client: reject.Client()}, testConfig())
+	startWorkers(t, store, provider.HTTPSender{URL: reject.URL, Client: reject.Client()}, testConfig())
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -245,4 +209,62 @@ func TestPermanentErrorGoesDead(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// Banco caiu com os workers rodando: eles logam e continuam tentando, sem panic e sem travar o shutdown.
+func TestWorkersSurviveDBOutage(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workers = 1
+	cfg.ReapInterval = 10 * time.Millisecond
+	logs := runWorkers(t, testdb.Broken(t, "t_outage"), funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg)
+	logs.waitFor(t, "msg=claim")
+	logs.waitFor(t, "msg=reap")
+}
+
+// Worker demorou mais q o lease e o reaper devolveu a linha: ele não pode marcar sent com o token velho.
+// A outra tentativa entrega e o attempts mostra as duas.
+func TestWorkerThatLostLeaseDoesNotFinish(t *testing.T) {
+	pool, store := testdb.New(t, "t_leaselost")
+	ctx := context.Background()
+	id, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.Workers = 1
+	cfg.Lease = 40 * time.Millisecond
+	cfg.ReapInterval = time.Hour
+	var once sync.Once
+	slow := funcSender(func(context.Context, *domain.OutboxEntry) error {
+		once.Do(func() {
+			time.Sleep(60 * time.Millisecond)
+			if _, err := store.Reap(ctx, 10); err != nil {
+				t.Error(err)
+			}
+		})
+		return nil
+	})
+	logs := runWorkers(t, store, slow, cfg)
+	logs.waitFor(t, "lease perdido")
+	testdb.WaitAllSent(t, pool, 1)
+
+	if st, err := store.Get(ctx, id); err != nil || st.Attempts != 2 {
+		t.Fatalf("status %+v err=%v, esperado 2 tentativas", st, err)
+	}
+}
+
+// Envio deu certo mas o UPDATE pra sent falhou: o worker loga e a linha fica pro reaper.
+func TestWorkerLogsFinalizeError(t *testing.T) {
+	pool, store := testdb.New(t, "t_finalize")
+	if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"}); err != nil {
+		t.Fatal(err)
+	}
+	testdb.Sabotage(t, pool, "outbox", `IF NEW.status = 'sent' THEN RAISE EXCEPTION 'boom'; END IF; RETURN NEW;`)
+
+	cfg := testConfig()
+	cfg.Workers = 1
+	cfg.Lease = time.Minute
+	logs := runWorkers(t, store, funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg)
+	logs.waitFor(t, "msg=finalizar")
 }

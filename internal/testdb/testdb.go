@@ -5,15 +5,15 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 )
 
 // New recria o schema e devolve um Store migrado. Pula o teste sem DATABASE_URL.
-func New(t *testing.T, schema string) (*pgxpool.Pool, *outbox.Store) {
+func New(t *testing.T, schema string) (*pgxpool.Pool, *postgres.Store) {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
@@ -45,9 +45,50 @@ func New(t *testing.T, schema string) (*pgxpool.Pool, *outbox.Store) {
 	}
 	t.Cleanup(pool.Close)
 
-	store := outbox.NewStore(pool)
+	store := postgres.NewStore(pool)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	return pool, store
+}
+
+// Broken devolve um Store com o pool já fechado: é o banco fora do ar, sem mock.
+func Broken(t *testing.T, schema string) *postgres.Store {
+	pool, store := New(t, schema)
+	pool.Close()
+	return store
+}
+
+// Sabotage cria um trigger no schema do teste pra fazer um comando específico falhar dentro da transação.
+func Sabotage(t *testing.T, pool *pgxpool.Pool, table, body string) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+		CREATE FUNCTION sabotage() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN `+body+` END $$;
+		CREATE TRIGGER sabotage BEFORE INSERT OR UPDATE ON `+pgx.Identifier{table}.Sanitize()+`
+		FOR EACH ROW EXECUTE FUNCTION sabotage();`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// WaitAllSent espera a outbox inteira virar sent, com want linhas.
+func WaitAllSent(t *testing.T, pool *pgxpool.Pool, want int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var sent, open int
+		err := pool.QueryRow(context.Background(), `
+			SELECT count(*) FILTER (WHERE status = 'sent'), count(*) FILTER (WHERE status <> 'sent') FROM outbox`).
+			Scan(&sent, &open)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sent == want && open == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout: sent=%d outros=%d, esperado sent=%d", sent, open, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

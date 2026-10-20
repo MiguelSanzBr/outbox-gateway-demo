@@ -12,10 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/httpapi"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/provider"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/api"
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 )
 
 // exit é variável só pra o teste conseguir ver o código de saída sem matar o processo.
@@ -35,7 +36,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	cfg := outbox.Config{
+	cfg := worker.Config{
 		Workers:      envInt("WORKERS", 16),
 		Lease:        envDur("LEASE", 30*time.Second),
 		PollInterval: envDur("POLL_INTERVAL", 50*time.Millisecond),
@@ -56,21 +57,21 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	store := outbox.NewStore(pool)
+	store := postgres.NewStore(pool)
 	if err := store.Migrate(ctx); err != nil {
 		return err
 	}
 
-	sender := outbox.HTTPSender{URL: os.Getenv("PROVIDER_URL"), Client: &http.Client{}}
-	fleet := outbox.Start(ctx, store, sender, cfg, log)
-	var admin *outbox.Fleet
+	sender := provider.HTTPSender{URL: os.Getenv("PROVIDER_URL"), Client: &http.Client{}}
+	fleet := worker.Start(ctx, store, sender, cfg, log)
+	var admin *worker.Fleet
 	if os.Getenv("DEMO_ADMIN") == "1" {
 		// derruba worker por HTTP sem autenticação: só pra demo, nunca em produção
 		log.Warn("DEMO_ADMIN=1: rotas /v1/admin ligadas")
 		admin = fleet
 	}
 
-	srv := &http.Server{Addr: envStr("ADDR", ":8080"), Handler: api.New(ctx, store, admin, log), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: envStr("ADDR", ":8080"), Handler: httpapi.New(ctx, store, admin, log), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

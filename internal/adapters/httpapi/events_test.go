@@ -1,4 +1,4 @@
-package api_test
+package httpapi_test
 
 import (
 	"bufio"
@@ -14,9 +14,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/api"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/httpapi"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
@@ -102,7 +102,7 @@ func waitListeners(t *testing.T, pool *pgxpool.Pool, schema string, want int) {
 
 func TestListRecentMessages(t *testing.T) {
 	_, store := testdb.New(t, "t_api_list")
-	srv := httptest.NewServer(api.New(context.Background(), store, nil, quiet))
+	srv := httptest.NewServer(httpapi.New(context.Background(), store, nil, quiet))
 	t.Cleanup(srv.Close)
 	for _, k := range []string{"a", "b", "c"} {
 		if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: k, Recipient: "ana", Body: k}); err != nil {
@@ -137,14 +137,14 @@ func TestListRecentMessages(t *testing.T) {
 // Mudança de estado vira evento SSE, com ping no meio pra proxy não derrubar a conexão parada.
 // Cliente q desconecta libera a conexão LISTEN; servidor desligando fecha o stream.
 func TestEventsStream(t *testing.T) {
-	old := *api.Heartbeat
-	*api.Heartbeat = 20 * time.Millisecond
-	t.Cleanup(func() { *api.Heartbeat = old })
+	old := *httpapi.Heartbeat
+	*httpapi.Heartbeat = 20 * time.Millisecond
+	t.Cleanup(func() { *httpapi.Heartbeat = old })
 
 	pool, store := testdb.New(t, "t_api_sse")
 	ctx, shutdown := context.WithCancel(context.Background())
 	defer shutdown()
-	srv := httptest.NewServer(api.New(ctx, store, nil, quiet))
+	srv := httptest.NewServer(httpapi.New(ctx, store, nil, quiet))
 	t.Cleanup(srv.Close)
 
 	resp, lines := stream(t, srv.URL)
@@ -178,7 +178,7 @@ func TestEventsWithDBDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	srv := httptest.NewServer(api.New(context.Background(), outbox.NewStore(pool), nil, quiet))
+	srv := httptest.NewServer(httpapi.New(context.Background(), postgres.NewStore(pool), nil, quiet))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/v1/events")
