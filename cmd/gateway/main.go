@@ -62,13 +62,15 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 
 	sender := outbox.HTTPSender{URL: os.Getenv("PROVIDER_URL"), Client: &http.Client{}}
-	done := make(chan struct{})
-	go func() {
-		outbox.Run(ctx, store, sender, cfg, log)
-		close(done)
-	}()
+	fleet := outbox.Start(ctx, store, sender, cfg, log)
+	var admin *outbox.Fleet
+	if os.Getenv("DEMO_ADMIN") == "1" {
+		// derruba worker por HTTP sem autenticação: só pra demo, nunca em produção
+		log.Warn("DEMO_ADMIN=1: rotas /v1/admin ligadas")
+		admin = fleet
+	}
 
-	srv := &http.Server{Addr: envStr("ADDR", ":8080"), Handler: api.New(ctx, store, nil, log), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: envStr("ADDR", ":8080"), Handler: api.New(ctx, store, admin, log), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -79,7 +81,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	err = srv.ListenAndServe()
 	// se o listen falhar, para os workers antes de fechar o pool, senão eles ficam girando em cima de pool fechado
 	cancel()
-	<-done
+	fleet.Wait()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
