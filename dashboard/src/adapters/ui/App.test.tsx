@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { EventHandlers, GatewayApi, GatewayEvents, Worker } from '../../application/ports'
 import type { Msg } from '../../domain/message'
-import { App } from './App'
+import { App, workersPoll } from './App'
 
 const msg = (over: Partial<Msg>): Msg => ({
   id: 1,
@@ -12,13 +12,18 @@ const msg = (over: Partial<Msg>): Msg => ({
   status: 'pending',
   attempts: 0,
   worker: null,
+  version: 0,
   last_error: null,
   ...over,
 })
 
 function fakeApi(over: Partial<GatewayApi> = {}): GatewayApi {
   return {
-    listMessages: vi.fn(async () => [msg({ id: 1 }), msg({ id: 2, recipient: 'demo-2', status: 'sent', attempts: 1, worker: 1 })]),
+    listMessages: vi.fn(async () => [
+      msg({ id: 1 }),
+      msg({ id: 2, recipient: 'demo-2', status: 'sent', attempts: 1, worker: 1, version: 2 }),
+      msg({ id: 3, status: 'queued' }),
+    ]),
     listWorkers: vi.fn(async (): Promise<Worker[] | null> => [
       { id: 0, alive: true },
       { id: 1, alive: false },
@@ -69,9 +74,13 @@ describe('App', () => {
     expect(await item(2)).toHaveAccessibleName('mensagem 2: sent, tentativa 1')
     expect(screen.getByRole('region', { name: 'demo-1' })).toContainElement(await item(1))
 
+    expect(await item(3)).toHaveAccessibleName('mensagem 3: queued')
     const counters = screen.getByRole('region', { name: 'Estados' })
+    expect(within(counters).getByText('queued').nextSibling).toHaveTextContent('1')
     expect(within(counters).getByText('pending').nextSibling).toHaveTextContent('1')
     expect(within(counters).getByText('sent').nextSibling).toHaveTextContent('1')
+    // os contadores são da janela do painel, não da tabela inteira
+    expect(counters).toHaveTextContent('nas últimas 500 mensagens')
 
     // conectou: busca a foto de novo pra cobrir o q passou antes do LISTEN
     push((h) => h.onOpen())
@@ -84,11 +93,11 @@ describe('App', () => {
   it('segue os eventos ao vivo e avisa quando o reaper devolve a linha', async () => {
     const { push } = setup()
     await item(1)
-    push((h) => h.onChange(msg({ id: 1, status: 'sending', attempts: 1, worker: 0 })))
+    push((h) => h.onChange(msg({ id: 1, status: 'sending', attempts: 1, worker: 0, version: 1 })))
     expect(await item(1)).toHaveAccessibleName('mensagem 1: sending, tentativa 1, worker 0')
     expect(screen.getByRole('listitem', { name: /^worker 0/ })).toHaveTextContent('enviando #1')
 
-    push((h) => h.onChange(msg({ id: 1, status: 'pending', attempts: 1, worker: 0, last_error: 'lease expirado' })))
+    push((h) => h.onChange(msg({ id: 1, status: 'pending', attempts: 1, worker: 0, version: 2, last_error: 'lease expirado' })))
     expect(await item(1)).toHaveAccessibleName('mensagem 1: pending, tentativa 1, devolvida pelo reaper')
     expect(screen.getByRole('log')).toHaveTextContent('#1 devolvida pelo reaper')
   })
@@ -113,6 +122,23 @@ describe('App', () => {
     const { user } = setup(fakeApi({ killWorker: vi.fn(async () => Promise.reject(new Error('HTTP 404'))) }))
     await user.click(await screen.findByRole('button', { name: 'Derrubar worker 0' }))
     await waitFor(() => expect(screen.getByRole('log')).toHaveTextContent('não deu pra derrubar o worker 0: HTTP 404'))
+  })
+
+  it('avisa quando religar falha', async () => {
+    const { user } = setup(fakeApi({ reviveWorkers: vi.fn(async () => Promise.reject(new Error('HTTP 502'))) }))
+    await user.click(await screen.findByRole('button', { name: 'Religar workers' }))
+    await waitFor(() => expect(screen.getByRole('log')).toHaveTextContent('não deu pra religar: HTTP 502'))
+  })
+
+  it('mostra carregando até a foto chegar e, com a fila vazia, o q fazer', async () => {
+    let resolve: (m: Msg[]) => void = () => undefined
+    const pending = new Promise<Msg[]>((r) => (resolve = r))
+    setup(fakeApi({ listMessages: vi.fn(() => pending) }))
+    expect(screen.getByText('carregando as mensagens…')).toBeInTheDocument()
+    expect(screen.queryByText(/Nenhuma mensagem ainda/)).not.toBeInTheDocument()
+    resolve([])
+    expect(await screen.findByText(/Nenhuma mensagem ainda\. Clique em Enfileirar 20 mensagens/)).toBeInTheDocument()
+    expect(screen.queryByText('carregando as mensagens…')).not.toBeInTheDocument()
   })
 
   it('sem DEMO_ADMIN mostra como ligar, sem botão de derrubar', async () => {
@@ -148,5 +174,11 @@ describe('App', () => {
     const { view, s } = setup()
     view.unmount()
     expect(s.stopped).toBe(true)
+  })
+
+  it('para de consultar os workers quando o admin está desligado', () => {
+    expect(workersPoll(null)).toBe(false)
+    expect(workersPoll(undefined)).toBe(1000)
+    expect(workersPoll([{ id: 0, alive: true }])).toBe(1000)
   })
 })

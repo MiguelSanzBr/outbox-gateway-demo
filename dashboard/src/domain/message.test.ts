@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { counts, isNewer, lanes, type Msg } from './message'
+import { counts, isMsg, isNewer, lanes, reaped, type Msg } from './message'
 
 const msg = (over: Partial<Msg>): Msg => ({
   id: 1,
@@ -7,14 +7,44 @@ const msg = (over: Partial<Msg>): Msg => ({
   status: 'pending',
   attempts: 0,
   worker: null,
+  version: 0,
   last_error: null,
   ...over,
 })
 
 describe('counts', () => {
   it('conta por estado, zerado quando não tem', () => {
-    const ms = [msg({ id: 1 }), msg({ id: 2, status: 'sent' }), msg({ id: 3, status: 'sent' })]
-    expect(counts(ms)).toEqual({ pending: 1, sending: 0, sent: 2, dead: 0 })
+    const ms = [msg({ id: 1 }), msg({ id: 2, status: 'sent' }), msg({ id: 3, status: 'sent' }), msg({ id: 4, status: 'queued' })]
+    expect(counts(ms)).toEqual({ queued: 1, pending: 1, sending: 0, sent: 2, dead: 0 })
+  })
+})
+
+describe('isMsg', () => {
+  it('aceita o formato do gateway e recusa o resto, em vez de estourar dentro do handler', () => {
+    expect(isMsg(msg({}))).toBe(true)
+    expect(isMsg(msg({ worker: 3, last_error: 'x' }))).toBe(true)
+    for (const bad of [
+      null,
+      'x',
+      { ...msg({}), status: 'perdida' },
+      { ...msg({}), id: '1' },
+      { ...msg({}), version: undefined },
+      { ...msg({}), recipient: 3 },
+      { ...msg({}), attempts: null },
+      { ...msg({}), worker: 'w0' },
+      { ...msg({}), last_error: 4 },
+    ]) {
+      expect(isMsg(bad)).toBe(false)
+    }
+  })
+})
+
+describe('reaped', () => {
+  it('reconhece a devolução pelo reaper pelo prefixo do motivo, inclusive a dead da última tentativa', () => {
+    expect(reaped(msg({ last_error: 'lease expirado' }))).toBe(true)
+    expect(reaped(msg({ last_error: 'lease expirado na última tentativa: resultado incerto' }))).toBe(true)
+    expect(reaped(msg({ last_error: 'provedor: HTTP 503' }))).toBe(false)
+    expect(reaped(msg({}))).toBe(false)
   })
 })
 
@@ -36,17 +66,23 @@ describe('lanes', () => {
 })
 
 describe('isNewer', () => {
-  it('segue a vida da linha: claim soma tentativa e o sending vem antes do resultado', () => {
-    const pending = msg({})
-    const sending1 = msg({ status: 'sending', attempts: 1 })
-    const reapedBack = msg({ status: 'pending', attempts: 1, last_error: 'lease expirado' })
-    const sending2 = msg({ status: 'sending', attempts: 2 })
-    const sent = msg({ status: 'sent', attempts: 2 })
+  it('a versão da linha decide, mesmo quando attempts volta (release no shutdown, redrive)', () => {
+    const queued = msg({ status: 'queued' })
+    const pending = msg({ version: 1 })
+    const sending1 = msg({ status: 'sending', attempts: 1, version: 2 })
+    const released = msg({ status: 'pending', attempts: 0, version: 3 })
+    const sending2 = msg({ status: 'sending', attempts: 1, version: 4 })
+    const dead = msg({ status: 'dead', attempts: 1, version: 5 })
+    const redriven = msg({ status: 'pending', attempts: 0, version: 6 })
+    const sent = msg({ status: 'sent', attempts: 1, version: 8 })
     const life: [Msg, Msg][] = [
+      [queued, pending],
       [pending, sending1],
-      [sending1, reapedBack],
-      [reapedBack, sending2],
-      [sending2, sent],
+      [sending1, released],
+      [released, sending2],
+      [sending2, dead],
+      [dead, redriven],
+      [redriven, sent],
     ]
     for (const [prev, next] of life) {
       expect(isNewer(next, prev)).toBe(true)

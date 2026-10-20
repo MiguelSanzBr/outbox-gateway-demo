@@ -12,12 +12,14 @@ function stubFetch(...replies: Response[]) {
 }
 
 describe('httpApi', () => {
-  it('listMessages devolve a foto e falha com o status HTTP', async () => {
-    const rows = [{ id: 1, recipient: 'ana', status: 'pending', attempts: 0, worker: null, last_error: null }]
-    const fetch = stubFetch(reply(200, rows), reply(500, { error: 'erro interno' }))
+  it('listMessages devolve a foto e falha com o status HTTP ou com formato inesperado', async () => {
+    const rows = [{ id: 1, recipient: 'ana', status: 'pending', attempts: 0, worker: null, version: 0, last_error: null }]
+    const fetch = stubFetch(reply(200, rows), reply(500, { error: 'erro interno' }), reply(200, [{ id: 1 }]), reply(200, {}))
     await expect(httpApi.listMessages()).resolves.toEqual(rows)
     expect(fetch).toHaveBeenCalledWith('/v1/messages')
     await expect(httpApi.listMessages()).rejects.toEqual(new HttpError(500))
+    await expect(httpApi.listMessages()).rejects.toThrow('formato inesperado')
+    await expect(httpApi.listMessages()).rejects.toThrow('formato inesperado')
   })
 
   it('listWorkers devolve null quando o admin está desligado (404)', async () => {
