@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/api"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
 type okSender struct{}
 
-func (okSender) Send(context.Context, *outbox.Claim) error { return nil }
+func (okSender) Send(context.Context, *domain.OutboxEntry) error { return nil }
 
 func call(t *testing.T, method, url string) (int, []byte) {
 	t.Helper()

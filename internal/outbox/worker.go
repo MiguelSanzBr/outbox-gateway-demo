@@ -4,23 +4,17 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math/rand/v2"
 	"sync"
 	"time"
+
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
 // Sender entrega uma mensagem ao provedor. Deve repassar c.IdempotencyKey para
 // que o provedor descarte reenvios (o worker garante pelo menos uma vez).
 type Sender interface {
-	Send(ctx context.Context, c *Claim) error
+	Send(ctx context.Context, c *domain.OutboxEntry) error
 }
-
-type permanentError struct{ error }
-
-func (e permanentError) Unwrap() error { return e.error }
-
-// Permanent marca um erro que não adianta tentar de novo (ex.: HTTP 400).
-func Permanent(err error) error { return permanentError{err} }
 
 type Config struct {
 	Workers      int
@@ -151,7 +145,7 @@ func work(ctx context.Context, id int, store *Store, sender Sender, cfg Config, 
 	}
 }
 
-func process(ctx context.Context, store *Store, sender Sender, cfg Config, log *slog.Logger, c *Claim) {
+func process(ctx context.Context, store *Store, sender Sender, cfg Config, log *slog.Logger, c *domain.OutboxEntry) {
 	// Envio limitado a metade do lease: o reaper não devolve a linha à fila enquanto ela ainda está em voo.
 	sendCtx, cancel := context.WithTimeout(ctx, cfg.Lease/2)
 	sendErr := sender.Send(sendCtx, c)
@@ -165,26 +159,23 @@ func process(ctx context.Context, store *Store, sender Sender, cfg Config, log *
 	doneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
+	var t domain.Transition
 	var err error
 	if sendErr == nil {
-		err = store.MarkSent(doneCtx, c)
+		t, err = c.Complete()
 	} else {
-		dead := errors.As(sendErr, new(permanentError)) || c.Attempts >= cfg.MaxAttempts
-		err = store.MarkFailed(doneCtx, c, sendErr.Error(), backoff(cfg, c.Attempts), dead)
-		log.Warn("envio falhou", "id", c.ID, "attempt", c.Attempts, "dead", dead, "err", sendErr)
+		t, err = c.Fail(sendErr, domain.RetryPolicy{MaxAttempts: cfg.MaxAttempts, BackoffBase: cfg.BackoffBase, BackoffMax: cfg.BackoffMax})
+		log.Warn("envio falhou", "id", c.ID, "attempt", c.Attempts, "dead", t.To == domain.Dead, "err", sendErr)
 	}
-	if errors.Is(err, ErrLeaseLost) {
+	if err == nil {
+		err = store.Finish(doneCtx, c.ID, t)
+	}
+	if errors.Is(err, domain.ErrLeaseLost) {
 		// Outro worker assumiu a linha; o provedor deduplica pela chave de idempotência.
 		log.Warn("lease perdido", "id", c.ID)
 	} else if err != nil {
 		log.Error("finalizar", "id", c.ID, "err", err)
 	}
-}
-
-// backoff exponencial com jitter: metade fixa, metade aleatória.
-func backoff(cfg Config, attempt int) time.Duration {
-	d := min(cfg.BackoffBase<<min(attempt-1, 20), cfg.BackoffMax)
-	return d/2 + rand.N(d/2+1)
 }
 
 func reap(ctx context.Context, store *Store, cfg Config, log *slog.Logger) {

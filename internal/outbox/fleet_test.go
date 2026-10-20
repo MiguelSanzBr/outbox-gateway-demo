@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
@@ -16,7 +17,7 @@ import (
 func TestFleetKillMidSendLeavesRowForReaper(t *testing.T) {
 	pool, store := testdb.New(t, "t_fleet")
 	ctx := context.Background()
-	id, _, err := store.Enqueue(ctx, "k", "ana", "oi")
+	id, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +28,7 @@ func TestFleetKillMidSendLeavesRowForReaper(t *testing.T) {
 	cfg.ReapInterval = 20 * time.Millisecond
 	inSend := make(chan struct{})
 	var calls atomic.Int32
-	sender := funcSender(func(ctx context.Context, _ *outbox.Claim) error {
+	sender := funcSender(func(ctx context.Context, _ *domain.OutboxEntry) error {
 		if calls.Add(1) == 1 {
 			close(inSend)
 			<-ctx.Done() // trava até o worker ser derrubado
@@ -94,7 +95,7 @@ func TestFleetReviveAfterShutdown(t *testing.T) {
 	cfg := testConfig()
 	cfg.Workers = 2
 	ctx, cancel := context.WithCancel(context.Background())
-	fleet := outbox.Start(ctx, store, funcSender(func(context.Context, *outbox.Claim) error { return nil }), cfg, quiet)
+	fleet := outbox.Start(ctx, store, funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg, quiet)
 	fleet.Kill(1)
 	cancel()
 	fleet.Wait()

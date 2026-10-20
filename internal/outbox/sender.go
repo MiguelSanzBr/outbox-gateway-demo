@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
 // HTTPSender entrega ao provedor (real ou o mock deste repositório).
@@ -16,12 +18,12 @@ type HTTPSender struct {
 	Client *http.Client
 }
 
-func (s HTTPSender) Send(ctx context.Context, c *Claim) error {
+func (s HTTPSender) Send(ctx context.Context, c *domain.OutboxEntry) error {
 	// Marshal de map[string]string não falha, por isso o erro é ignorado
 	payload, _ := json.Marshal(map[string]string{"to": c.Recipient, "body": c.Body})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL, bytes.NewReader(payload))
 	if err != nil {
-		return Permanent(err)
+		return domain.Permanent(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", c.IdempotencyKey)
@@ -40,6 +42,6 @@ func (s HTTPSender) Send(ctx context.Context, c *Claim) error {
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 		return fmt.Errorf("provedor: HTTP %d", resp.StatusCode)
 	default:
-		return Permanent(fmt.Errorf("provedor: HTTP %d", resp.StatusCode))
+		return domain.Permanent(fmt.Errorf("provedor: HTTP %d", resp.StatusCode))
 	}
 }

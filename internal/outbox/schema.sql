@@ -35,16 +35,13 @@ CREATE INDEX IF NOT EXISTS outbox_lease ON outbox (lease_until) WHERE status = '
 -- ALTER separado pq o CREATE TABLE IF NOT EXISTS não mexe em banco criado antes dessa coluna.
 ALTER TABLE outbox ADD COLUMN IF NOT EXISTS worker INT;
 
--- Formato do evento do painel. Uma função só pra o NOTIFY e a listagem não divergirem.
-CREATE OR REPLACE FUNCTION outbox_event(o outbox) RETURNS json LANGUAGE sql STABLE AS $$
-    SELECT json_build_object('id', o.message_id, 'recipient', o.recipient, 'status', o.status,
-                             'attempts', o.attempts, 'worker', o.worker, 'last_error', left(o.last_error, 200))
-$$;
-
--- Toda mudança de estado vira NOTIFY. Só sai no commit, na ordem dos commits, e se ninguém estiver ouvindo se perde.
+-- Toda mudança de estado vira NOTIFY, no formato do domain.Change. Só sai no commit,
+-- na ordem dos commits, e se ninguém estiver ouvindo se perde.
 CREATE OR REPLACE FUNCTION outbox_notify() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    PERFORM pg_notify('outbox_events', outbox_event(NEW)::text);
+    PERFORM pg_notify('outbox_events', json_build_object(
+        'id', NEW.message_id, 'recipient', NEW.recipient, 'status', NEW.status,
+        'attempts', NEW.attempts, 'worker', NEW.worker, 'last_error', left(NEW.last_error, 200))::text);
     RETURN NULL;
 END $$;
 CREATE OR REPLACE TRIGGER outbox_notify AFTER INSERT OR UPDATE ON outbox

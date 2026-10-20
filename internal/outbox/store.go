@@ -12,18 +12,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
 //go:embed schema.sql
 var schema string
-
-var (
-	// ErrKeyConflict: a chave de idempotência já existe com outro conteúdo.
-	ErrKeyConflict = errors.New("chave de idempotência reutilizada com conteúdo diferente")
-	// ErrLeaseLost: o lease expirou e a linha foi devolvida à fila (ou reivindicada por outro worker).
-	ErrLeaseLost = errors.New("lease perdido")
-	ErrNotFound  = errors.New("mensagem não encontrada")
-)
 
 type Store struct{ pool *pgxpool.Pool }
 
@@ -36,7 +30,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 // Enqueue grava a mensagem e a linha da outbox atomicamente. Repetir a mesma
 // chave com o mesmo conteúdo devolve o id original com created=false.
-func (s *Store) Enqueue(ctx context.Context, key, recipient, body string) (id int64, created bool, err error) {
+func (s *Store) Enqueue(ctx context.Context, m domain.Message) (id int64, created bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, false, err
@@ -46,42 +40,31 @@ func (s *Store) Enqueue(ctx context.Context, key, recipient, body string) (id in
 	err = tx.QueryRow(ctx, `
 		INSERT INTO messages (idempotency_key, recipient, body) VALUES ($1, $2, $3)
 		ON CONFLICT (idempotency_key) DO NOTHING
-		RETURNING id`, key, recipient, body).Scan(&id)
+		RETURNING id`, m.IdempotencyKey, m.Recipient, m.Body).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var r, b string
 		if err := tx.QueryRow(ctx,
-			`SELECT id, recipient, body FROM messages WHERE idempotency_key = $1`, key).Scan(&id, &r, &b); err != nil {
+			`SELECT id, recipient, body FROM messages WHERE idempotency_key = $1`, m.IdempotencyKey).Scan(&id, &r, &b); err != nil {
 			return 0, false, err
 		}
-		if r != recipient || b != body {
-			return 0, false, ErrKeyConflict
+		if r != m.Recipient || b != m.Body {
+			return 0, false, domain.ErrKeyConflict
 		}
 		return id, false, nil
 	}
 	if err != nil {
 		return 0, false, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO outbox (message_id, recipient) VALUES ($1, $2)`, id, recipient); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO outbox (message_id, recipient) VALUES ($1, $2)`, id, m.Recipient); err != nil {
 		return 0, false, err
 	}
 	return id, true, tx.Commit(ctx)
 }
 
-// Claim é uma linha reivindicada por um worker. LeaseToken funciona como
-// fencing token: só quem tem o token vigente pode finalizar a linha.
-type Claim struct {
-	ID             int64
-	LeaseToken     string
-	Attempts       int
-	IdempotencyKey string
-	Recipient      string
-	Body           string
-}
-
 // Claim reivindica a mensagem pronta mais antiga cujo destinatário não tem
 // nenhuma mensagem anterior em aberto. Devolve (nil, nil) se não houver nada.
-func (s *Store) Claim(ctx context.Context, worker int, lease time.Duration) (*Claim, error) {
-	var c Claim
+func (s *Store) Claim(ctx context.Context, worker int, lease time.Duration) (*domain.OutboxEntry, error) {
+	c := domain.OutboxEntry{Status: domain.Sending, Lease: domain.Lease{Worker: worker}}
 	err := s.pool.QueryRow(ctx, `
 		WITH next AS (
 			SELECT o.id
@@ -106,7 +89,7 @@ func (s *Store) Claim(ctx context.Context, worker int, lease time.Duration) (*Cl
 		FROM next, messages m
 		WHERE o.id = next.id AND m.id = o.message_id
 		RETURNING o.id, o.lease_token::text, o.attempts, m.idempotency_key, m.recipient, m.body`,
-		lease.Milliseconds(), worker).Scan(&c.ID, &c.LeaseToken, &c.Attempts, &c.IdempotencyKey, &c.Recipient, &c.Body)
+		lease.Milliseconds(), worker).Scan(&c.ID, &c.Lease.Token, &c.Attempts, &c.IdempotencyKey, &c.Recipient, &c.Body)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -116,39 +99,28 @@ func (s *Store) Claim(ctx context.Context, worker int, lease time.Duration) (*Cl
 	return &c, nil
 }
 
-func (s *Store) MarkSent(ctx context.Context, c *Claim) error {
+// Finish grava a transição decidida pelo domínio. O WHERE pelo lease_token é o fencing:
+// se o lease venceu e a linha mudou de mão, nada é gravado e volta ErrLeaseLost.
+func (s *Store) Finish(ctx context.Context, id int64, t domain.Transition) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE outbox
-		SET status = 'sent', sent_at = now(), lease_token = NULL, lease_until = NULL, last_error = NULL
-		WHERE id = $1 AND lease_token = $2`, c.ID, c.LeaseToken)
+		SET status = $3,
+		    sent_at = CASE WHEN $3 = 'sent' THEN now() END,
+		    next_attempt_at = CASE WHEN $3 = 'sent' THEN next_attempt_at ELSE now() + $4 * interval '1 millisecond' END,
+		    last_error = NULLIF($5, ''), lease_token = NULL, lease_until = NULL
+		WHERE id = $1 AND lease_token = $2`, id, string(t.Token), string(t.To), t.RetryIn.Milliseconds(), t.LastError)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrLeaseLost
-	}
-	return nil
-}
-
-// MarkFailed devolve a linha à fila após retryIn, ou a encerra como 'dead'.
-func (s *Store) MarkFailed(ctx context.Context, c *Claim, cause string, retryIn time.Duration, dead bool) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE outbox
-		SET status = CASE WHEN $3 THEN 'dead' ELSE 'pending' END,
-		    next_attempt_at = now() + $4 * interval '1 millisecond',
-		    last_error = $5, lease_token = NULL, lease_until = NULL
-		WHERE id = $1 AND lease_token = $2`, c.ID, c.LeaseToken, dead, retryIn.Milliseconds(), cause)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrLeaseLost
+		return domain.ErrLeaseLost
 	}
 	return nil
 }
 
 // Reap devolve à fila as linhas cujo lease expirou (worker morto ou travado).
-// Linhas que já gastaram maxAttempts viram 'dead' para não girar para sempre.
+// Linhas que já gastaram maxAttempts viram 'dead' para não girar para sempre:
+// é a RetryPolicy.Exhausted do domínio, aplicada em lote num UPDATE só.
 func (s *Store) Reap(ctx context.Context, maxAttempts int) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE outbox
@@ -162,25 +134,15 @@ func (s *Store) Reap(ctx context.Context, maxAttempts int) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-type Status struct {
-	ID        int64      `json:"id"`
-	Recipient string     `json:"recipient"`
-	Status    string     `json:"status"`
-	Attempts  int        `json:"attempts"`
-	LastError *string    `json:"last_error,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	SentAt    *time.Time `json:"sent_at,omitempty"`
-}
-
-func (s *Store) Get(ctx context.Context, id int64) (*Status, error) {
-	var st Status
+func (s *Store) Get(ctx context.Context, id int64) (*domain.MessageState, error) {
+	var st domain.MessageState
 	err := s.pool.QueryRow(ctx, `
 		SELECT m.id, m.recipient, o.status, o.attempts, o.last_error, m.created_at, o.sent_at
 		FROM messages m JOIN outbox o ON o.message_id = m.id
 		WHERE m.id = $1`, id).
 		Scan(&st.ID, &st.Recipient, &st.Status, &st.Attempts, &st.LastError, &st.CreatedAt, &st.SentAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get %d: %w", id, err)

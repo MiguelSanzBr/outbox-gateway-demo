@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/mockprovider"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
@@ -69,19 +70,27 @@ func waitAllSent(t *testing.T, pool *pgxpool.Pool, want int) {
 	}
 }
 
+func finishSent(ctx context.Context, store *outbox.Store, c *domain.OutboxEntry) error {
+	tr, err := c.Complete()
+	if err != nil {
+		return err
+	}
+	return store.Finish(ctx, c.ID, tr)
+}
+
 func TestEnqueueIsIdempotent(t *testing.T) {
 	pool, store := testdb.New(t, "t_enqueue")
 	ctx := context.Background()
 
-	id1, created1, err := store.Enqueue(ctx, "k1", "r1", "oi")
+	id1, created1, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k1", Recipient: "r1", Body: "oi"})
 	if err != nil || !created1 {
 		t.Fatalf("primeiro enqueue: id=%d created=%v err=%v", id1, created1, err)
 	}
-	id2, created2, err := store.Enqueue(ctx, "k1", "r1", "oi")
+	id2, created2, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k1", Recipient: "r1", Body: "oi"})
 	if err != nil || created2 || id2 != id1 {
 		t.Fatalf("repetição: id=%d created=%v err=%v", id2, created2, err)
 	}
-	if _, _, err := store.Enqueue(ctx, "k1", "r1", "outro corpo"); !errors.Is(err, outbox.ErrKeyConflict) {
+	if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k1", Recipient: "r1", Body: "outro corpo"}); !errors.Is(err, domain.ErrKeyConflict) {
 		t.Fatalf("conteúdo diferente: err=%v, esperado ErrKeyConflict", err)
 	}
 
@@ -106,7 +115,7 @@ func TestDeliveryNoLossNoDuplicatesInOrder(t *testing.T) {
 			defer wg.Done()
 			for i := range perRecipient {
 				key := fmt.Sprintf("r%d-m%d", r, i)
-				if _, _, err := store.Enqueue(context.Background(), key, fmt.Sprintf("r%d", r), key); err != nil {
+				if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: key, Recipient: fmt.Sprintf("r%d", r), Body: key}); err != nil {
 					t.Error(err)
 					return
 				}
@@ -144,7 +153,7 @@ func TestReaperRecoversWorkerKilledMidSend(t *testing.T) {
 	ctx := context.Background()
 
 	for _, k := range []string{"m1", "m2"} {
-		if _, _, err := store.Enqueue(ctx, k, "ana", k); err != nil {
+		if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: k, Recipient: "ana", Body: k}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -180,7 +189,7 @@ func TestReaperRecoversWorkerKilledMidSend(t *testing.T) {
 func TestStaleLeaseCannotFinish(t *testing.T) {
 	_, store := testdb.New(t, "t_fencing")
 	ctx := context.Background()
-	if _, _, err := store.Enqueue(ctx, "k", "bia", "oi"); err != nil {
+	if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "bia", Body: "oi"}); err != nil {
 		t.Fatal(err)
 	}
 	stale, err := store.Claim(ctx, 0, time.Millisecond)
@@ -196,10 +205,10 @@ func TestStaleLeaseCannotFinish(t *testing.T) {
 		t.Fatalf("novo claim: %v", err)
 	}
 
-	if err := store.MarkSent(ctx, stale); !errors.Is(err, outbox.ErrLeaseLost) {
-		t.Fatalf("MarkSent com lease velho: err=%v, esperado ErrLeaseLost", err)
+	if err := finishSent(ctx, store, stale); !errors.Is(err, domain.ErrLeaseLost) {
+		t.Fatalf("sent com lease velho: err=%v, esperado ErrLeaseLost", err)
 	}
-	if err := store.MarkSent(ctx, fresh); err != nil {
+	if err := finishSent(ctx, store, fresh); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -213,7 +222,7 @@ func TestPermanentErrorGoesDead(t *testing.T) {
 	}))
 	t.Cleanup(reject.Close)
 
-	id, _, err := store.Enqueue(ctx, "k", "caio", "oi")
+	id, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "caio", Body: "oi"})
 	if err != nil {
 		t.Fatal(err)
 	}

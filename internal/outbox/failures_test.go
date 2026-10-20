@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
@@ -76,31 +77,28 @@ func sabotage(t *testing.T, pool *pgxpool.Pool, table, body string) {
 	}
 }
 
-type funcSender func(ctx context.Context, c *outbox.Claim) error
+type funcSender func(ctx context.Context, c *domain.OutboxEntry) error
 
-func (f funcSender) Send(ctx context.Context, c *outbox.Claim) error { return f(ctx, c) }
+func (f funcSender) Send(ctx context.Context, c *domain.OutboxEntry) error { return f(ctx, c) }
 
 func TestStoreSurfacesDBErrors(t *testing.T) {
 	store := brokenStore(t, "t_broken")
 	ctx := context.Background()
-	c := &outbox.Claim{ID: 1, LeaseToken: "00000000-0000-0000-0000-000000000000"}
+	tr := domain.Transition{Token: "00000000-0000-0000-0000-000000000000", To: domain.Sent}
 
-	if _, _, err := store.Enqueue(ctx, "k", "ana", "oi"); err == nil {
+	if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"}); err == nil {
 		t.Error("Enqueue sem erro com banco fora")
 	}
 	if _, err := store.Claim(ctx, 0, time.Second); err == nil {
 		t.Error("Claim sem erro com banco fora")
 	}
-	if err := store.MarkSent(ctx, c); err == nil || errors.Is(err, outbox.ErrLeaseLost) {
-		t.Errorf("MarkSent: %v", err)
-	}
-	if err := store.MarkFailed(ctx, c, "x", 0, false); err == nil || errors.Is(err, outbox.ErrLeaseLost) {
-		t.Errorf("MarkFailed: %v", err)
+	if err := store.Finish(ctx, 1, tr); err == nil || errors.Is(err, domain.ErrLeaseLost) {
+		t.Errorf("Finish: %v", err)
 	}
 	if _, err := store.Reap(ctx, 1); err == nil {
 		t.Error("Reap sem erro com banco fora")
 	}
-	if _, err := store.Get(ctx, 1); err == nil || errors.Is(err, outbox.ErrNotFound) {
+	if _, err := store.Get(ctx, 1); err == nil || errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("Get: %v", err)
 	}
 }
@@ -117,7 +115,7 @@ func TestEnqueueIsAtomic(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			pool, store := testdb.New(t, "t_atomic"+string(rune('a'+i)))
 			sabotage(t, pool, c.table, c.body)
-			if _, _, err := store.Enqueue(context.Background(), "k", "ana", "oi"); err == nil {
+			if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"}); err == nil {
 				t.Fatal("esperava erro")
 			}
 			var n int
@@ -131,7 +129,7 @@ func TestEnqueueIsAtomic(t *testing.T) {
 
 func TestGetNotFound(t *testing.T) {
 	_, store := testdb.New(t, "t_notfound")
-	if _, err := store.Get(context.Background(), 42); !errors.Is(err, outbox.ErrNotFound) {
+	if _, err := store.Get(context.Background(), 42); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("err=%v, esperado ErrNotFound", err)
 	}
 }
@@ -139,28 +137,22 @@ func TestGetNotFound(t *testing.T) {
 func TestMarkFailedWithStaleLease(t *testing.T) {
 	_, store := testdb.New(t, "t_stalefail")
 	ctx := context.Background()
-	if _, _, err := store.Enqueue(ctx, "k", "ana", "oi"); err != nil {
+	if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"}); err != nil {
 		t.Fatal(err)
 	}
 	c, err := store.Claim(ctx, 0, time.Minute)
 	if err != nil || c == nil {
 		t.Fatalf("claim: %v", err)
 	}
-	c.LeaseToken = "00000000-0000-0000-0000-000000000000"
-	if err := store.MarkFailed(ctx, c, "x", 0, false); !errors.Is(err, outbox.ErrLeaseLost) {
+	c.Lease.Token = "00000000-0000-0000-0000-000000000000"
+	tr, _ := c.Fail(errors.New("x"), domain.RetryPolicy{MaxAttempts: 5})
+	if err := store.Finish(ctx, c.ID, tr); !errors.Is(err, domain.ErrLeaseLost) {
 		t.Fatalf("err=%v, esperado ErrLeaseLost", err)
 	}
 }
 
-func TestPermanentKeepsCause(t *testing.T) {
-	cause := errors.New("HTTP 400")
-	if !errors.Is(outbox.Permanent(cause), cause) {
-		t.Fatal("Permanent perdeu o erro original")
-	}
-}
-
 func TestSenderErrors(t *testing.T) {
-	c := &outbox.Claim{ID: 1, IdempotencyKey: "k", Recipient: "ana", Body: "oi"}
+	c := &domain.OutboxEntry{ID: 1, IdempotencyKey: "k", Recipient: "ana", Body: "oi"}
 
 	bad := outbox.HTTPSender{URL: "http://host com espaço/", Client: http.DefaultClient}
 	if err := bad.Send(context.Background(), c); err == nil {
@@ -180,7 +172,7 @@ func TestWorkersSurviveDBOutage(t *testing.T) {
 	cfg := testConfig()
 	cfg.Workers = 1
 	cfg.ReapInterval = 10 * time.Millisecond
-	logs := runWorkers(t, brokenStore(t, "t_outage"), funcSender(func(context.Context, *outbox.Claim) error { return nil }), cfg)
+	logs := runWorkers(t, brokenStore(t, "t_outage"), funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg)
 	logs.waitFor(t, "msg=claim")
 	logs.waitFor(t, "msg=reap")
 }
@@ -190,7 +182,7 @@ func TestWorkersSurviveDBOutage(t *testing.T) {
 func TestWorkerThatLostLeaseDoesNotFinish(t *testing.T) {
 	pool, store := testdb.New(t, "t_leaselost")
 	ctx := context.Background()
-	id, _, err := store.Enqueue(ctx, "k", "ana", "oi")
+	id, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +192,7 @@ func TestWorkerThatLostLeaseDoesNotFinish(t *testing.T) {
 	cfg.Lease = 40 * time.Millisecond
 	cfg.ReapInterval = time.Hour
 	var once sync.Once
-	slow := funcSender(func(context.Context, *outbox.Claim) error {
+	slow := funcSender(func(context.Context, *domain.OutboxEntry) error {
 		once.Do(func() {
 			time.Sleep(60 * time.Millisecond)
 			if _, err := store.Reap(ctx, 10); err != nil {
@@ -221,7 +213,7 @@ func TestWorkerThatLostLeaseDoesNotFinish(t *testing.T) {
 // Envio deu certo mas o UPDATE pra sent falhou: o worker loga e a linha fica pro reaper.
 func TestWorkerLogsFinalizeError(t *testing.T) {
 	pool, store := testdb.New(t, "t_finalize")
-	if _, _, err := store.Enqueue(context.Background(), "k", "ana", "oi"); err != nil {
+	if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"}); err != nil {
 		t.Fatal(err)
 	}
 	sabotage(t, pool, "outbox", `IF NEW.status = 'sent' THEN RAISE EXCEPTION 'boom'; END IF; RETURN NEW;`)
@@ -229,6 +221,6 @@ func TestWorkerLogsFinalizeError(t *testing.T) {
 	cfg := testConfig()
 	cfg.Workers = 1
 	cfg.Lease = time.Minute
-	logs := runWorkers(t, store, funcSender(func(context.Context, *outbox.Claim) error { return nil }), cfg)
+	logs := runWorkers(t, store, funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg)
 	logs.waitFor(t, "msg=finalizar")
 }

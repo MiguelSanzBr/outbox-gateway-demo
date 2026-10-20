@@ -2,39 +2,26 @@ package outbox_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
-type event struct {
-	ID        int64   `json:"id"`
-	Recipient string  `json:"recipient"`
-	Status    string  `json:"status"`
-	Attempts  int     `json:"attempts"`
-	Worker    *int    `json:"worker"`
-	LastError *string `json:"last_error"`
-}
-
 // O canal do NOTIFY é um só no banco todo, então outros pacotes de teste rodando junto
 // também aparecem aqui. Filtra pelo destinatário, q é único por teste.
-func nextEvent(t *testing.T, ch <-chan string, recipient string) event {
+func nextEvent(t *testing.T, ch <-chan domain.Change, recipient string) domain.Change {
 	t.Helper()
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
-		case p, ok := <-ch:
+		case e, ok := <-ch:
 			if !ok {
 				t.Fatal("canal fechou antes do evento")
-			}
-			var e event
-			if err := json.Unmarshal([]byte(p), &e); err != nil {
-				t.Fatalf("payload inválido %q: %v", p, err)
 			}
 			if e.Recipient == recipient {
 				return e
@@ -56,7 +43,7 @@ func TestListenStreamsStateChanges(t *testing.T) {
 	}
 
 	const who = "listen-ana"
-	id, _, err := store.Enqueue(ctx, "k", who, "oi")
+	id, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: who, Body: "oi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,9 +56,9 @@ func TestListenStreamsStateChanges(t *testing.T) {
 	}
 
 	for i, want := range []struct {
-		status   string
+		status   domain.Status
 		attempts int
-	}{{"pending", 0}, {"sending", 1}, {"pending", 1}} {
+	}{{domain.Pending, 0}, {domain.Sending, 1}, {domain.Pending, 1}} {
 		e := nextEvent(t, ch, who)
 		if e.ID != id || e.Status != want.status || e.Attempts != want.attempts {
 			t.Fatalf("evento %d: %+v, esperado id=%d %+v", i, e, id, want)

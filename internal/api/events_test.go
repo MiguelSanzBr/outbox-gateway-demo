@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/api"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
@@ -104,7 +105,7 @@ func TestListRecentMessages(t *testing.T) {
 	srv := httptest.NewServer(api.New(context.Background(), store, nil, quiet))
 	t.Cleanup(srv.Close)
 	for _, k := range []string{"a", "b", "c"} {
-		if _, _, err := store.Enqueue(context.Background(), k, "ana", k); err != nil {
+		if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: k, Recipient: "ana", Body: k}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -150,7 +151,7 @@ func TestEventsStream(t *testing.T) {
 	if resp.Header.Get("Cache-Control") != "no-cache" {
 		t.Errorf("Cache-Control = %q", resp.Header.Get("Cache-Control"))
 	}
-	if _, _, err := store.Enqueue(context.Background(), "k", "sse-ana", "oi"); err != nil {
+	if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: "k", Recipient: "sse-ana", Body: "oi"}); err != nil {
 		t.Fatal(err)
 	}
 	waitLine(t, lines, func(l string) bool {

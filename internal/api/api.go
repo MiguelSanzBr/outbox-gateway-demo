@@ -11,15 +11,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/outbox"
 )
 
-const (
-	maxKeyLen       = 200
-	maxRecipientLen = 64
-	maxBodyLen      = 4096
-	recentLimit     = 500
-)
+const recentLimit = 500
 
 // ping do SSE: proxy e load balancer derrubam conexão parada (o nginx corta em 60 s)
 var heartbeat = 15 * time.Second
@@ -61,8 +57,8 @@ type handler struct {
 
 func (h handler) create(w http.ResponseWriter, r *http.Request) {
 	key := r.Header.Get("Idempotency-Key")
-	if key == "" || len(key) > maxKeyLen {
-		writeError(w, http.StatusBadRequest, "header Idempotency-Key obrigatório (até 200 caracteres)")
+	if err := domain.CheckKey(key); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var in struct {
@@ -74,14 +70,15 @@ func (h handler) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "JSON inválido")
 		return
 	}
-	if in.Recipient == "" || len(in.Recipient) > maxRecipientLen || in.Body == "" || len(in.Body) > maxBodyLen {
-		writeError(w, http.StatusUnprocessableEntity, "recipient (até 64) e body (até 4096) são obrigatórios")
+	m, err := domain.NewMessage(key, in.Recipient, in.Body)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 
-	id, created, err := h.store.Enqueue(r.Context(), key, in.Recipient, in.Body)
+	id, created, err := h.store.Enqueue(r.Context(), m)
 	switch {
-	case errors.Is(err, outbox.ErrKeyConflict):
+	case errors.Is(err, domain.ErrKeyConflict):
 		writeError(w, http.StatusConflict, err.Error())
 	case err != nil:
 		h.log.Error("enqueue", "err", err)
@@ -101,7 +98,7 @@ func (h handler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := h.store.Get(r.Context(), id)
 	switch {
-	case errors.Is(err, outbox.ErrNotFound):
+	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case err != nil:
 		h.log.Error("get", "err", err)
@@ -118,8 +115,7 @@ func (h handler) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(rows)
+	writeJSON(w, http.StatusOK, rows)
 }
 
 // events manda cada mudança de estado da outbox como evento SSE. Não guarda nada:
@@ -151,10 +147,11 @@ func (h handler) events(w http.ResponseWriter, r *http.Request) {
 	defer tick.Stop()
 	for {
 		select {
-		case p, ok := <-ch:
+		case c, ok := <-ch:
 			if !ok {
 				return // cliente saiu, servidor desligando ou LISTEN caiu; o EventSource reconecta sozinho
 			}
+			p, _ := json.Marshal(c) // Change só tem tipo simples, Marshal não falha
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", p)
 		case <-tick.C:
 			_, _ = fmt.Fprint(w, ": ping\n\n")

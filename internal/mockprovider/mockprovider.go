@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
 type Config struct {
@@ -31,12 +33,12 @@ type Provider struct {
 	mu        sync.Mutex
 	stats     Stats
 	seen      map[string]bool
-	lastSeq   map[string]int64
+	order     domain.RecipientOrder
 	delivered map[string][]string // tudo em memória: serve pra teste e carga de alguns minutos, não pra rodar dias
 }
 
 func New(cfg Config) *Provider {
-	return &Provider{cfg: cfg, seen: map[string]bool{}, lastSeq: map[string]int64{}, delivered: map[string][]string{}}
+	return &Provider{cfg: cfg, seen: map[string]bool{}, delivered: map[string][]string{}}
 }
 
 func (p *Provider) Handler() http.Handler {
@@ -82,10 +84,9 @@ func (p *Provider) send(w http.ResponseWriter, r *http.Request) {
 	}
 	p.seen[key] = true
 	p.stats.Accepted++
-	if seq <= p.lastSeq[msg.To] {
+	if !p.order.Observe(msg.To, seq) {
 		p.stats.OrderViolations++
 	}
-	p.lastSeq[msg.To] = seq
 	p.delivered[msg.To] = append(p.delivered[msg.To], msg.Body)
 	w.WriteHeader(http.StatusAccepted)
 }

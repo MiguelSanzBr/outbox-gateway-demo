@@ -18,7 +18,7 @@ func TestStatusMachine(t *testing.T) {
 		{domain.Sending, domain.Sent, true},
 		{domain.Sending, domain.Dead, true},
 		{domain.Sending, domain.Pending, true}, // retry ou lease vencido
-		{domain.Pending, domain.Sent, false},  // não entrega sem claim
+		{domain.Pending, domain.Sent, false},   // não entrega sem claim
 		{domain.Pending, domain.Dead, false},
 		{domain.Sent, domain.Pending, false}, // sent e dead são finais
 		{domain.Dead, domain.Sending, false},
