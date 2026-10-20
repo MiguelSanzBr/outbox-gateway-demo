@@ -42,3 +42,55 @@ jobs:
           echo "cobertura: $total"
           [ "$total" = "100.0%" ] || { go tool cover -func=cover.out | grep -v '100.0%'; exit 1; }
       - run: docker build .
+
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: testes + gate de 100% de cobertura
+        run: npm run coverage
+      - run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [test, dashboard]
+    env:
+      # 2 workers e 1 s por envio: sempre tem worker no meio de um envio pra derrubar
+      DEMO_ADMIN: "1"
+      WORKERS: "2"
+      LEASE: 6s
+      MOCK_LATENCY: 1s
+      MOCK_JITTER: 0s
+      MOCK_FAIL_RATE: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: sobe a stack
+        run: |
+          docker compose up -d --build
+          timeout 120 sh -c 'until curl -sf localhost:5180/v1/messages >/dev/null; do sleep 1; done'
+      - name: playwright
+        working-directory: dashboard
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run e2e
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down -v
