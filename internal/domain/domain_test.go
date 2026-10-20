@@ -14,7 +14,7 @@ func TestStatusMachine(t *testing.T) {
 		from, to domain.Status
 		ok       bool
 	}{
-		{domain.Queued, domain.Pending, true}, // a cabeça do destinatário saiu, a próxima sobe
+		{domain.Queued, domain.Pending, true},  // a cabeça do destinatário saiu, a próxima sobe
 		{domain.Queued, domain.Sending, false}, // só a cabeça é reivindicada
 		{domain.Pending, domain.Queued, false},
 		{domain.Pending, domain.Sending, true},
