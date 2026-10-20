@@ -11,7 +11,21 @@ import (
 	"time"
 
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
+
+// Event é o JSON de uma mudança, igual no stream e na foto de GET /v1/messages
+// (o httpapi usa este mesmo formato pra os dois não divergirem).
+type Event struct {
+	ID        int64         `json:"id"`
+	Recipient string        `json:"recipient"`
+	Status    domain.Status `json:"status"`
+	Attempts  int           `json:"attempts"`
+	Worker    *int          `json:"worker"`
+	LastError *string       `json:"last_error"`
+}
+
+func EventOf(c app.Change) Event { return Event(c) }
 
 // ping do SSE: proxy e load balancer derrubam conexão parada (o nginx corta em 60 s)
 var heartbeat = 15 * time.Second
@@ -53,7 +67,7 @@ func Handler(ctx context.Context, svc *app.Service, log *slog.Logger) http.Handl
 				if !ok {
 					return // cliente saiu, servidor desligando ou LISTEN caiu; o EventSource reconecta sozinho
 				}
-				p, _ := json.Marshal(c) // Change só tem tipo simples, Marshal não falha
+				p, _ := json.Marshal(EventOf(c)) // Event só tem tipo simples, Marshal não falha
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", p)
 			case <-tick.C:
 				_, _ = fmt.Fprint(w, ": ping\n\n")

@@ -2,7 +2,6 @@ package domain
 
 import (
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -39,25 +38,4 @@ func NewMessage(key, recipient, body string) (Message, error) {
 		return Message{}, ErrInvalidContent
 	}
 	return Message{IdempotencyKey: key, Recipient: recipient, Body: body}, nil
-}
-
-// MessageState é o q GET /v1/messages/{id} devolve.
-type MessageState struct {
-	ID        int64      `json:"id"`
-	Recipient string     `json:"recipient"`
-	Status    Status     `json:"status"`
-	Attempts  int        `json:"attempts"`
-	LastError *string    `json:"last_error,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	SentAt    *time.Time `json:"sent_at,omitempty"`
-}
-
-// Change é uma mudança de estado da outbox, como o painel recebe na lista e no SSE.
-type Change struct {
-	ID        int64   `json:"id"`
-	Recipient string  `json:"recipient"`
-	Status    Status  `json:"status"`
-	Attempts  int     `json:"attempts"`
-	Worker    *int    `json:"worker"`
-	LastError *string `json:"last_error"`
 }

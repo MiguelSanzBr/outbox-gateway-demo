@@ -37,16 +37,16 @@ func (s *Service) EnqueueMessage(ctx context.Context, key, recipient, body strin
 	return s.repo.Enqueue(ctx, m)
 }
 
-func (s *Service) GetMessage(ctx context.Context, id int64) (*domain.MessageState, error) {
+func (s *Service) GetMessage(ctx context.Context, id int64) (*MessageState, error) {
 	return s.repo.Get(ctx, id)
 }
 
 // RecentChanges é a foto inicial do painel; daí pra frente ele segue pelo StreamEvents.
-func (s *Service) RecentChanges(ctx context.Context, n int) ([]domain.Change, error) {
+func (s *Service) RecentChanges(ctx context.Context, n int) ([]Change, error) {
 	return s.repo.Recent(ctx, n)
 }
 
-func (s *Service) StreamEvents(ctx context.Context) (<-chan domain.Change, error) {
+func (s *Service) StreamEvents(ctx context.Context) (<-chan Change, error) {
 	return s.events.Listen(ctx)
 }
 

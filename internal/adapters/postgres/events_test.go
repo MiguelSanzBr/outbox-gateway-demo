@@ -8,13 +8,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
 // O canal do NOTIFY é um só no banco todo, então outros pacotes de teste rodando junto
 // também aparecem aqui. Filtra pelo destinatário, q é único por teste.
-func nextEvent(t *testing.T, ch <-chan domain.Change, recipient string) domain.Change {
+func nextEvent(t *testing.T, ch <-chan app.Change, recipient string) app.Change {
 	t.Helper()
 	timeout := time.After(5 * time.Second)
 	for {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/sse"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
@@ -27,7 +28,15 @@ func New(ctx context.Context, svc *app.Service, demo *app.Demo, log *slog.Logger
 	mux.Handle("GET /v1/events", sse.Handler(ctx, svc, log))
 	if demo != nil {
 		mux.HandleFunc("GET /v1/admin/workers", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, demo.ListWorkers())
+			type worker struct {
+				ID    int  `json:"id"`
+				Alive bool `json:"alive"`
+			}
+			out := []worker{}
+			for _, w := range demo.ListWorkers() {
+				out = append(out, worker(w))
+			}
+			writeJSON(w, http.StatusOK, out)
 		})
 		mux.HandleFunc("POST /v1/admin/workers/{id}/kill", func(w http.ResponseWriter, r *http.Request) {
 			id, err := strconv.Atoi(r.PathValue("id"))
@@ -98,7 +107,10 @@ func (h handler) get(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("get", "err", err)
 		writeError(w, http.StatusInternalServerError, "erro interno")
 	default:
-		writeJSON(w, http.StatusOK, st)
+		writeJSON(w, http.StatusOK, messageJSON{
+			ID: st.ID, Recipient: st.Recipient, Status: st.Status, Attempts: st.Attempts,
+			LastError: st.LastError, CreatedAt: st.CreatedAt, SentAt: st.SentAt,
+		})
 	}
 }
 
@@ -109,7 +121,22 @@ func (h handler) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
-	writeJSON(w, http.StatusOK, rows)
+	out := make([]sse.Event, len(rows))
+	for i, c := range rows {
+		out[i] = sse.EventOf(c)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// messageJSON é o formato de GET /v1/messages/{id}.
+type messageJSON struct {
+	ID        int64         `json:"id"`
+	Recipient string        `json:"recipient"`
+	Status    domain.Status `json:"status"`
+	Attempts  int           `json:"attempts"`
+	LastError *string       `json:"last_error,omitempty"`
+	CreatedAt time.Time     `json:"created_at"`
+	SentAt    *time.Time    `json:"sent_at,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

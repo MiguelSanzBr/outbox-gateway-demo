@@ -17,8 +17,8 @@ type OutboxRepository interface {
 	Claim(ctx context.Context, worker int, lease time.Duration) (*domain.OutboxEntry, error)
 	Finish(ctx context.Context, id int64, t domain.Transition) error
 	Reap(ctx context.Context, maxAttempts int) (int64, error)
-	Get(ctx context.Context, id int64) (*domain.MessageState, error)
-	Recent(ctx context.Context, n int) ([]domain.Change, error)
+	Get(ctx context.Context, id int64) (*MessageState, error)
+	Recent(ctx context.Context, n int) ([]Change, error)
 }
 
 // Sender entrega uma mensagem ao provedor. Tem q repassar c.IdempotencyKey pra o
@@ -30,7 +30,7 @@ type Sender interface {
 // EventSource entrega as mudanças de estado da outbox. O canal fecha quando ctx acaba
 // ou a fonte cai; quem consome tem q ler até fechar.
 type EventSource interface {
-	Listen(ctx context.Context) (<-chan domain.Change, error)
+	Listen(ctx context.Context) (<-chan Change, error)
 }
 
 // WorkerPool é o controle dos workers q a demo usa pra derrubar e religar.
@@ -41,6 +41,27 @@ type WorkerPool interface {
 }
 
 type WorkerInfo struct {
-	ID    int  `json:"id"`
-	Alive bool `json:"alive"`
+	ID    int
+	Alive bool
+}
+
+// MessageState é a leitura de uma mensagem: o q a API devolve em GET /v1/messages/{id}.
+type MessageState struct {
+	ID        int64
+	Recipient string
+	Status    domain.Status
+	Attempts  int
+	LastError *string
+	CreatedAt time.Time
+	SentAt    *time.Time
+}
+
+// Change é uma mudança de estado da outbox: a foto do painel e cada evento do stream.
+type Change struct {
+	ID        int64
+	Recipient string
+	Status    domain.Status
+	Attempts  int
+	Worker    *int
+	LastError *string
 }

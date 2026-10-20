@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
@@ -125,8 +126,8 @@ func (s *Store) Reap(ctx context.Context, maxAttempts int) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-func (s *Store) Get(ctx context.Context, id int64) (*domain.MessageState, error) {
-	var st domain.MessageState
+func (s *Store) Get(ctx context.Context, id int64) (*app.MessageState, error) {
+	var st app.MessageState
 	err := s.pool.QueryRow(ctx, `
 		SELECT m.id, m.recipient, o.status, o.attempts, o.last_error, m.created_at, o.sent_at
 		FROM messages m JOIN outbox o ON o.message_id = m.id
