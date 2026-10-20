@@ -74,6 +74,12 @@ func TestAdminRequeueDead(t *testing.T) {
 	if st, _ := store.Get(ctx, dead); st.Status != domain.Pending || st.Attempts != 0 {
 		t.Fatalf("depois do redrive: %+v", st)
 	}
+
+	down := httptest.NewServer(api(ctx, testdb.Broken(t, "t_api_requeue_down"), app.NewDemo(okPool{})))
+	t.Cleanup(down.Close)
+	if code, body := call(t, http.MethodPost, down.URL+"/v1/admin/messages/1/requeue"); code != http.StatusInternalServerError {
+		t.Fatalf("redrive com banco fora: HTTP %d %s, esperado 500", code, body)
+	}
 }
 
 // okPool é a fleet de mentira, pra ligar as rotas de admin sem subir worker.

@@ -23,16 +23,9 @@ func text(s string, maxLen int) bool {
 	return s != "" && len(s) <= maxLen && utf8.ValidString(s) && !strings.ContainsRune(s, 0)
 }
 
-func CheckKey(key string) error {
-	if !text(key, maxKeyLen) {
-		return ErrInvalidKey
-	}
-	return nil
-}
-
 func NewMessage(key, recipient, body string) (Message, error) {
-	if err := CheckKey(key); err != nil {
-		return Message{}, err
+	if !text(key, maxKeyLen) {
+		return Message{}, ErrInvalidKey
 	}
 	if !text(recipient, maxRecipientLen) || strings.TrimSpace(recipient) == "" || !text(body, maxBodyLen) {
 		return Message{}, ErrInvalidContent

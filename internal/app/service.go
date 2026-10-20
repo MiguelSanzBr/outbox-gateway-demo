@@ -126,6 +126,9 @@ func (s *Service) Deliver(ctx context.Context, c *domain.OutboxEntry) (t domain.
 
 func killed(ctx context.Context) bool { return errors.Is(context.Cause(ctx), ErrWorkerKilled) }
 
+// RequeueDead é o redrive manual: a dead volta pra fila zerada.
+func (s *Service) RequeueDead(ctx context.Context, id int64) error { return s.repo.Requeue(ctx, id) }
+
 // reapBatch é quantas linhas o reaper trata por rodada; o resto fica pra próxima.
 const reapBatch = 100
 
