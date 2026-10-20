@@ -34,3 +34,13 @@ func (s *Store) Listen(ctx context.Context) (<-chan string, error) {
 	}()
 	return ch, nil
 }
+
+// Recent devolve as n linhas mais novas como array JSON, no mesmo formato dos eventos.
+// É a foto inicial do painel; daí pra frente ele se atualiza pelo Listen.
+func (s *Store) Recent(ctx context.Context, n int) ([]byte, error) {
+	var out []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT coalesce(json_agg(e ORDER BY id DESC), '[]')
+		FROM (SELECT o.id, outbox_event(o) AS e FROM outbox o ORDER BY o.id DESC LIMIT $1) x`, n).Scan(&out)
+	return out, err
+}

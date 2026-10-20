@@ -68,7 +68,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		close(done)
 	}()
 
-	srv := &http.Server{Addr: envStr("ADDR", ":8080"), Handler: api.New(store, log), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: envStr("ADDR", ":8080"), Handler: api.New(ctx, store, nil, log), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
