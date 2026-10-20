@@ -36,6 +36,8 @@ func New(t *testing.T, schema string) (*pgxpool.Pool, *outbox.Store) {
 		t.Fatal(err)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	// application_name = schema pra o teste achar as conexões dele no pg_stat_activity
+	cfg.ConnConfig.RuntimeParams["application_name"] = schema
 	cfg.MaxConns = 32
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -15,7 +16,7 @@ import (
 
 func TestCreateMessage(t *testing.T) {
 	_, store := testdb.New(t, "t_api")
-	srv := httptest.NewServer(api.New(store, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	srv := httptest.NewServer(api.New(context.Background(), store, nil, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	t.Cleanup(srv.Close)
 
 	post := func(key, body string) (int, map[string]any) {
@@ -75,11 +76,11 @@ func TestCreateMessage(t *testing.T) {
 func TestReadEndpointsAndErrors(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	_, store := testdb.New(t, "t_api_read")
-	ok := httptest.NewServer(api.New(store, quiet))
+	ok := httptest.NewServer(api.New(context.Background(), store, nil, quiet))
 	t.Cleanup(ok.Close)
 	pool, broken := testdb.New(t, "t_api_down")
 	pool.Close() // banco fora do ar: a API responde 500 e não vaza o erro do driver
-	down := httptest.NewServer(api.New(broken, quiet))
+	down := httptest.NewServer(api.New(context.Background(), broken, nil, quiet))
 	t.Cleanup(down.Close)
 
 	cases := []struct {
@@ -90,6 +91,7 @@ func TestReadEndpointsAndErrors(t *testing.T) {
 		{"id q não é número", http.MethodGet, ok.URL + "/v1/messages/abc", "", http.StatusBadRequest},
 		{"id q não existe", http.MethodGet, ok.URL + "/v1/messages/999", "", http.StatusNotFound},
 		{"GET com banco fora", http.MethodGet, down.URL + "/v1/messages/1", "", http.StatusInternalServerError},
+		{"lista com banco fora", http.MethodGet, down.URL + "/v1/messages", "", http.StatusInternalServerError},
 		{"POST com banco fora", http.MethodPost, down.URL + "/v1/messages", `{"recipient":"ana","body":"oi"}`, http.StatusInternalServerError},
 	}
 	for _, c := range cases {
