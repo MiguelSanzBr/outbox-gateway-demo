@@ -161,6 +161,52 @@ func TestDeliveryNoLossNoDuplicatesInOrder(t *testing.T) {
 	}
 }
 
+// Vários produtores ao mesmo tempo pro mesmo destinatário: os commits chegam em
+// qualquer ordem, e mesmo assim nada trava, nada duplica e o provedor recebe na ordem
+// de commit (X-Sequence só cresce). Antes, um commit invertido fazia todo claim bater
+// no índice único e a entrega parava pra todo mundo.
+func TestConcurrentProducersSameRecipient(t *testing.T) {
+	pool, store := testdb.New(t, "t_samerecipient")
+	provider, sender := startProvider(t, mockprovider.Config{Jitter: 2 * time.Millisecond})
+	cfg := testConfig()
+	cfg.Workers = 4
+	logs := runWorkers(t, store, sender, cfg)
+
+	const producers, each = 10, 10
+	var wg sync.WaitGroup
+	for p := range producers {
+		wg.Go(func() {
+			for i := range each {
+				key := fmt.Sprintf("p%d-m%d", p, i)
+				if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: key, Recipient: "solo", Body: key}); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	testdb.WaitAllSent(t, pool, producers*each)
+
+	if st := provider.Stats(); st.Accepted != producers*each || st.Duplicates != 0 || st.OrderViolations != 0 {
+		t.Fatalf("stats do provedor: %+v", st)
+	}
+	// a ordem de cada produtor também se mantém: o commit dele é sequencial
+	last := map[string]int{}
+	for _, body := range provider.Delivered("solo") {
+		var p, i int
+		_, _ = fmt.Sscanf(body, "p%d-m%d", &p, &i)
+		if prev, ok := last[fmt.Sprint(p)]; ok && i <= prev {
+			t.Fatalf("produtor %d fora de ordem: m%d depois de m%d", p, i, prev)
+		}
+		last[fmt.Sprint(p)] = i
+	}
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	if strings.Contains(logs.buf.String(), "msg=claim") {
+		t.Fatalf("claim deu erro com produtores concorrentes:\n%s", logs.buf.String())
+	}
+}
+
 // Um worker reivindica a mensagem, o provedor recebe, e o worker morre antes de
 // marcar 'sent'. O reaper devolve a linha à fila, outro worker reenvia, o
 // provedor descarta o reenvio pela chave e a mensagem seguinte só sai depois.
@@ -197,7 +243,7 @@ func TestReaperRecoversWorkerKilledMidSend(t *testing.T) {
 		t.Fatalf("stats do provedor: %+v (esperado 1 reenvio descartado)", st)
 	}
 	var attempts int
-	if err := pool.QueryRow(ctx, `SELECT attempts FROM outbox WHERE id = $1`, dying.ID).Scan(&attempts); err != nil || attempts != 2 {
+	if err := pool.QueryRow(ctx, `SELECT attempts FROM outbox WHERE message_id = $1`, dying.ID).Scan(&attempts); err != nil || attempts != 2 {
 		t.Fatalf("attempts de m1 = %d (err=%v), esperado 2", attempts, err)
 	}
 }
@@ -258,13 +304,14 @@ func TestWorkerThatLostLeaseDoesNotFinish(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Workers = 1
-	cfg.Lease = 40 * time.Millisecond
+	cfg.Lease = 200 * time.Millisecond
 	cfg.ReapInterval = time.Hour
+	reaper := app.NewService(store, nil, store, app.Config{Retry: domain.RetryPolicy{MaxAttempts: 10}})
 	var once sync.Once
 	slow := funcSender(func(context.Context, *domain.OutboxEntry) error {
 		once.Do(func() {
-			time.Sleep(60 * time.Millisecond)
-			if _, err := store.Reap(ctx, 10); err != nil {
+			time.Sleep(300 * time.Millisecond)
+			if _, err := reaper.ReapExpiredLeases(ctx); err != nil {
 				t.Error(err)
 			}
 		})

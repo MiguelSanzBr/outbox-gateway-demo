@@ -52,10 +52,11 @@ func TestListenStreamsStateChanges(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if n, err := store.Reap(ctx, 10); err != nil || n != 1 {
-		t.Fatalf("reap: n=%d err=%v", n, err)
+	if n := reap(t, store, noBackoff); n != 1 {
+		t.Fatalf("reap: n=%d", n)
 	}
 
+	var version int64 = -1
 	for i, want := range []struct {
 		status   domain.Status
 		attempts int
@@ -64,6 +65,11 @@ func TestListenStreamsStateChanges(t *testing.T) {
 		if e.ID != id || e.Status != want.status || e.Attempts != want.attempts {
 			t.Fatalf("evento %d: %+v, esperado id=%d %+v", i, e, id, want)
 		}
+		// toda mudança soma 1 na versão: é por ela q o painel sabe qual é a mais nova
+		if e.Version != version+1 {
+			t.Fatalf("evento %d: versão %d, esperado %d", i, e.Version, version+1)
+		}
+		version = e.Version
 		if i == 1 && (e.Worker == nil || *e.Worker != 7) {
 			t.Fatalf("evento do claim sem o worker: %+v", e)
 		}

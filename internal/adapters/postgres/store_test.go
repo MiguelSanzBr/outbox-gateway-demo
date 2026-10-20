@@ -34,6 +34,9 @@ func TestEnqueueIsIdempotent(t *testing.T) {
 	if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k1", Recipient: "r1", Body: "outro corpo"}); !errors.Is(err, domain.ErrKeyConflict) {
 		t.Fatalf("conteúdo diferente: err=%v, esperado ErrKeyConflict", err)
 	}
+	if _, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k1", Recipient: "outro", Body: "oi"}); !errors.Is(err, domain.ErrKeyConflict) {
+		t.Fatalf("outro destinatário: err=%v, esperado ErrKeyConflict", err)
+	}
 
 	var rows int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox`).Scan(&rows); err != nil || rows != 1 {
@@ -53,8 +56,8 @@ func TestStaleLeaseCannotFinish(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if n, err := store.Reap(ctx, 10); err != nil || n != 1 {
-		t.Fatalf("reap: n=%d err=%v", n, err)
+	if n := reap(t, store, noBackoff); n != 1 {
+		t.Fatalf("reap: n=%d", n)
 	}
 	fresh, err := store.Claim(ctx, 0, time.Minute)
 	if err != nil || fresh == nil {
@@ -83,8 +86,11 @@ func TestStoreSurfacesDBErrors(t *testing.T) {
 	if err := store.Finish(ctx, 1, tr); err == nil || errors.Is(err, domain.ErrLeaseLost) {
 		t.Errorf("Finish: %v", err)
 	}
-	if _, err := store.Reap(ctx, 1); err == nil {
-		t.Error("Reap sem erro com banco fora")
+	if _, err := store.Expired(ctx, 1); err == nil {
+		t.Error("Expired sem erro com banco fora")
+	}
+	if err := store.Requeue(ctx, 1); err == nil || errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("Requeue: %v", err)
 	}
 	if _, err := store.Get(ctx, 1); err == nil || errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("Get: %v", err)
