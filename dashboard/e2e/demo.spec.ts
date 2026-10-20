@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { execSync } from 'node:child_process'
 
 // Contra a stack de verdade (gateway + postgres + mock), subida com
 // DEMO_ADMIN=1 WORKERS=2 LEASE=6s MOCK_LATENCY=1s MOCK_JITTER=0s MOCK_FAIL_RATE=0:
@@ -27,4 +28,18 @@ test('mensagem enfileirada chega em sent e worker derrubado no meio do envio vol
 
   await page.getByRole('button', { name: 'Religar workers' }).click()
   await expect(page.getByRole('listitem', { name: 'worker 0: caído' })).toHaveCount(0)
+})
+
+// Gateway reiniciado com o painel aberto: no meio o nginx responde 502, o EventSource
+// desiste (CLOSED) e o painel tem q reconectar sozinho, com o gateway de IP novo ou não.
+test('painel volta pra ao vivo sozinho depois de reiniciar o gateway', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('status')).toHaveText('ao vivo')
+  const compose = (cmd: string) => execSync(`docker compose ${cmd} gateway`, { cwd: '..', stdio: 'ignore' })
+  compose('stop')
+  await expect(page.getByRole('status')).toHaveText('reconectando', { timeout: 30_000 })
+  // fora tempo bastante pro EventSource tentar de novo e levar o 502 do nginx
+  await page.waitForTimeout(6_000)
+  compose('start')
+  await expect(page.getByRole('status')).toHaveText('ao vivo', { timeout: 60_000 })
 })
