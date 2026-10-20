@@ -34,19 +34,31 @@ func TestCreateMessage(t *testing.T) {
 	cases := []struct {
 		name, key, body string
 		want            int
+		msg             string // trecho esperado no "error", quando importa
 	}{
-		{"novo", "a1", `{"recipient":"ana","body":"oi"}`, http.StatusAccepted},
-		{"repetido", "a1", `{"recipient":"ana","body":"oi"}`, http.StatusOK},
-		{"chave com outro conteúdo", "a1", `{"recipient":"ana","body":"tchau"}`, http.StatusConflict},
-		{"sem chave", "", `{"recipient":"ana","body":"oi"}`, http.StatusBadRequest},
-		{"json inválido", "a2", `{`, http.StatusBadRequest},
-		{"sem destinatário", "a3", `{"body":"oi"}`, http.StatusUnprocessableEntity},
+		{"novo", "a1", `{"recipient":"ana","body":"oi"}`, http.StatusAccepted, ""},
+		{"repetido", "a1", `{"recipient":"ana","body":"oi"}`, http.StatusOK, ""},
+		{"chave com outro conteúdo", "a1", `{"recipient":"ana","body":"tchau"}`, http.StatusConflict, "reutilizada"},
+		{"chave com outro destinatário", "a1", `{"recipient":"bia","body":"oi"}`, http.StatusConflict, "reutilizada"},
+		{"sem chave", "", `{"recipient":"ana","body":"oi"}`, http.StatusBadRequest, "Idempotency-Key"},
+		{"chave com UTF-8 inválido", "\xff\xfe", `{"recipient":"ana","body":"oi"}`, http.StatusBadRequest, "Idempotency-Key"},
+		{"json inválido", "a2", `{`, http.StatusBadRequest, ""},
+		{"campo desconhecido", "a2", `{"recipient":"ana","body":"oi","priority":9}`, http.StatusBadRequest, ""},
+		{"lixo depois do JSON", "a2", `{"recipient":"ana","body":"oi"} garbage`, http.StatusBadRequest, ""},
+		{"dois objetos", "a2", `{"recipient":"ana","body":"oi"}{}`, http.StatusBadRequest, ""},
+		{"corpo grande demais", "a2", `{"recipient":"ana","body":"` + strings.Repeat("x", 17<<10) + `"}`, http.StatusRequestEntityTooLarge, ""},
+		{"sem destinatário", "a3", `{"body":"oi"}`, http.StatusUnprocessableEntity, "bytes"},
+		// NUL passa no JSON (\u0000) mas o Postgres recusa: tem q ser 422, não 500
+		{"corpo com NUL", "a4", `{"recipient":"ana","body":"x\u0000y"}`, http.StatusUnprocessableEntity, ""},
 	}
 	var firstID any
 	for _, c := range cases {
 		code, out := post(c.key, c.body)
 		if code != c.want {
 			t.Fatalf("%s: HTTP %d %v, esperado %d", c.name, code, out, c.want)
+		}
+		if msg, _ := out["error"].(string); c.msg != "" && !strings.Contains(msg, c.msg) {
+			t.Fatalf("%s: erro %q, esperado com %q", c.name, msg, c.msg)
 		}
 		switch c.name {
 		case "novo":
