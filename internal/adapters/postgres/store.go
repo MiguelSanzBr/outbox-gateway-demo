@@ -201,6 +201,37 @@ func (s *Store) Requeue(ctx context.Context, id int64) error {
 	})
 }
 
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
+// QueueStats conta as não entregues por estado e mede a idade da mais antiga delas,
+// as duas pelo índice outbox_unsent.
+func (s *Store) QueueStats(ctx context.Context) (app.QueueStats, error) {
+	st := app.QueueStats{ByStatus: map[domain.Status]int64{}}
+	var status domain.Status
+	var n int64
+	rows, err := s.pool.Query(ctx, `SELECT status, count(*) FROM outbox WHERE status <> 'sent' GROUP BY status`)
+	if err == nil {
+		_, err = pgx.ForEachRow(rows, []any{&status, &n}, func() error {
+			st.ByStatus[status] = n
+			return nil
+		})
+	}
+	if err == nil {
+		var secs float64
+		// LEAST de um min por estado: cada um sai do índice na hora, o IN junto varreria tudo
+		err = s.pool.QueryRow(ctx, `SELECT coalesce((
+			SELECT extract(epoch FROM now() - created_at)::float8 FROM messages WHERE id = LEAST(
+				(SELECT min(message_id) FROM outbox WHERE status = 'queued'),
+				(SELECT min(message_id) FROM outbox WHERE status = 'pending'),
+				(SELECT min(message_id) FROM outbox WHERE status = 'sending'))), 0)`).Scan(&secs)
+		st.OldestUnsent = time.Duration(secs * float64(time.Second))
+	}
+	if err != nil {
+		return st, fmt.Errorf("queue stats: %w", err)
+	}
+	return st, nil
+}
+
 func (s *Store) Get(ctx context.Context, id int64) (*app.MessageState, error) {
 	var st app.MessageState
 	err := s.pool.QueryRow(ctx, `

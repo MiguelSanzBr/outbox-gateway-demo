@@ -22,6 +22,8 @@ type OutboxRepository interface {
 	// Requeue devolve uma dead à fila (domain.ErrInvalidTransition se ela não for dead).
 	Requeue(ctx context.Context, id int64) error
 	Get(ctx context.Context, id int64) (*MessageState, error)
+	Ping(ctx context.Context) error
+	QueueStats(ctx context.Context) (QueueStats, error)
 	Recent(ctx context.Context, n int) ([]Change, error)
 }
 

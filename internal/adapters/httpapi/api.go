@@ -62,7 +62,9 @@ func New(ctx context.Context, svc *app.Service, demo *app.Demo, log *slog.Logger
 		})
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	return mux
+	mux.HandleFunc("GET /readyz", h.ready)
+	mux.HandleFunc("GET /metrics", h.metrics)
+	return withAccessLog(mux, log)
 }
 
 type handler struct {
@@ -112,8 +114,7 @@ func (h handler) create(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, domain.ErrKeyConflict):
 		writeError(w, http.StatusConflict, domain.ErrKeyConflict.Error())
 	case err != nil:
-		h.log.Error("enqueue", "err", err)
-		writeError(w, http.StatusInternalServerError, "erro interno")
+		h.internalError(w, r, "enqueue", err)
 	case created:
 		writeJSON(w, http.StatusAccepted, map[string]any{"id": id, "status": "queued"})
 	default:
@@ -132,8 +133,7 @@ func (h handler) get(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case err != nil:
-		h.log.Error("get", "err", err)
-		writeError(w, http.StatusInternalServerError, "erro interno")
+		h.internalError(w, r, "get", err)
 	default:
 		writeJSON(w, http.StatusOK, messageJSON{
 			ID: st.ID, Recipient: st.Recipient, Status: st.Status, Attempts: st.Attempts,
@@ -155,8 +155,7 @@ func (h handler) requeue(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, domain.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "só mensagem dead volta pra fila")
 	case err != nil:
-		h.log.Error("requeue", "id", id, "err", err)
-		writeError(w, http.StatusInternalServerError, "erro interno")
+		h.internalError(w, r, "requeue", err)
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -165,8 +164,7 @@ func (h handler) requeue(w http.ResponseWriter, r *http.Request) {
 func (h handler) list(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.svc.RecentChanges(r.Context(), recentLimit)
 	if err != nil {
-		h.log.Error("list", "err", err)
-		writeError(w, http.StatusInternalServerError, "erro interno")
+		h.internalError(w, r, "list", err)
 		return
 	}
 	out := make([]sse.Event, len(rows))

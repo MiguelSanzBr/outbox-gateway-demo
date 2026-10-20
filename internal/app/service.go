@@ -17,10 +17,11 @@ type Config struct {
 }
 
 type Service struct {
-	repo   OutboxRepository
-	sender Sender
-	events EventSource
-	cfg    Config
+	repo     OutboxRepository
+	sender   Sender
+	events   EventSource
+	cfg      Config
+	counters counters
 }
 
 func NewService(repo OutboxRepository, sender Sender, events EventSource, cfg Config) *Service {
@@ -97,6 +98,9 @@ func (s *Service) Deliver(ctx context.Context, c *domain.OutboxEntry) (t domain.
 		if err == nil {
 			err = s.repo.Finish(fctx, c.ID, t)
 		}
+		if err == nil {
+			s.counters.released.Add(1)
+		}
 		return t, nil, err
 	}
 
@@ -118,9 +122,10 @@ func (s *Service) Deliver(ctx context.Context, c *domain.OutboxEntry) (t domain.
 	defer cancelDone()
 	if sendErr == nil {
 		t, err = s.CompleteDelivery(fctx, c)
-		return t, nil, err
+	} else {
+		t, err = s.FailDelivery(fctx, c, sendErr)
 	}
-	t, err = s.FailDelivery(fctx, c, sendErr)
+	s.counters.count(t, err)
 	return t, sendErr, err
 }
 
@@ -150,6 +155,8 @@ func (s *Service) ReapExpiredLeases(ctx context.Context) (int64, error) {
 			return n, err
 		}
 		if err == nil {
+			s.counters.count(t, nil)
+			s.counters.reaped.Add(1)
 			n++
 		}
 	}
