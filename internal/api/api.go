@@ -33,6 +33,22 @@ func New(ctx context.Context, store *outbox.Store, fleet *outbox.Fleet, log *slo
 	mux.HandleFunc("GET /v1/messages", h.list)
 	mux.HandleFunc("GET /v1/messages/{id}", h.get)
 	mux.HandleFunc("GET /v1/events", h.events)
+	if fleet != nil {
+		mux.HandleFunc("GET /v1/admin/workers", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, fleet.Workers())
+		})
+		mux.HandleFunc("POST /v1/admin/workers/{id}/kill", func(w http.ResponseWriter, r *http.Request) {
+			id, err := strconv.Atoi(r.PathValue("id"))
+			if err != nil || !fleet.Kill(id) {
+				writeError(w, http.StatusNotFound, "worker não existe ou já caiu")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("POST /v1/admin/workers/revive", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]int{"revived": fleet.Revive()})
+		})
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	return mux
 }
