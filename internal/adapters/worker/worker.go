@@ -17,11 +17,6 @@ type Config struct {
 	ReapInterval time.Duration
 }
 
-// Run sobe cfg.Workers workers e um reaper; bloqueia até ctx ser cancelado.
-func Run(ctx context.Context, svc *app.Service, cfg Config, log *slog.Logger) {
-	Start(ctx, svc, cfg, log).Wait()
-}
-
 // Fleet é o adapter q dirige os casos de uso de entrega: workers e reaper de um processo.
 // Guarda o cancel de cada worker pra demo conseguir derrubar um no meio do envio
 // e religar depois (implementa app.WorkerPool).

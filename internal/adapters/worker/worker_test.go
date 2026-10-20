@@ -70,7 +70,7 @@ func startWorkers(t *testing.T, store *postgres.Store, sender app.Sender, cfg te
 	svc, wc := cfg.split(store, sender)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { worker.Run(ctx, svc, wc, quiet); close(done) }()
+	go func() { worker.Start(ctx, svc, wc, quiet).Wait(); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 }
 
@@ -108,7 +108,7 @@ func runWorkers(t *testing.T, store *postgres.Store, sender app.Sender, cfg test
 	logs := &logBuffer{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { worker.Run(ctx, svc, wc, slog.New(slog.NewTextHandler(logs, nil))); close(done) }()
+	go func() { worker.Start(ctx, svc, wc, slog.New(slog.NewTextHandler(logs, nil))).Wait(); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 	return logs
 }
