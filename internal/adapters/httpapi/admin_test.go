@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/httpapi"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
@@ -34,7 +34,7 @@ func call(t *testing.T, method, url string) (int, []byte) {
 // Sem fleet (DEMO_ADMIN desligado) as rotas de admin nem existem.
 func TestAdminDisabledByDefault(t *testing.T) {
 	_, store := testdb.New(t, "t_api_noadmin")
-	srv := httptest.NewServer(httpapi.New(context.Background(), store, nil, quiet))
+	srv := httptest.NewServer(api(context.Background(), store, nil))
 	t.Cleanup(srv.Close)
 	for _, c := range []struct{ method, path string }{
 		{http.MethodGet, "/v1/admin/workers"},
@@ -50,12 +50,10 @@ func TestAdminDisabledByDefault(t *testing.T) {
 func TestAdminKillAndRevive(t *testing.T) {
 	_, store := testdb.New(t, "t_api_admin")
 	ctx, cancel := context.WithCancel(context.Background())
-	fleet := worker.Start(ctx, store, okSender{}, worker.Config{
-		Workers: 2, Lease: time.Second, PollInterval: 5 * time.Millisecond, ReapInterval: time.Second,
-		MaxAttempts: 3, BackoffBase: time.Millisecond, BackoffMax: time.Millisecond,
-	}, quiet)
+	svc := app.NewService(store, okSender{}, store, app.Config{Lease: time.Second, Retry: domain.RetryPolicy{MaxAttempts: 3}})
+	fleet := worker.Start(ctx, svc, worker.Config{Workers: 2, PollInterval: 5 * time.Millisecond, ReapInterval: time.Second}, quiet)
 	t.Cleanup(func() { cancel(); fleet.Wait() })
-	srv := httptest.NewServer(httpapi.New(ctx, store, fleet, quiet))
+	srv := httptest.NewServer(api(ctx, store, app.NewDemo(fleet)))
 	t.Cleanup(srv.Close)
 
 	steps := []struct {

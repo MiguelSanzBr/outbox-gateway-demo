@@ -1,4 +1,4 @@
-package httpapi_test
+package sse_test
 
 import (
 	"bufio"
@@ -14,8 +14,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/httpapi"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/sse"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
@@ -100,51 +101,17 @@ func waitListeners(t *testing.T, pool *pgxpool.Pool, schema string, want int) {
 	}
 }
 
-func TestListRecentMessages(t *testing.T) {
-	_, store := testdb.New(t, "t_api_list")
-	srv := httptest.NewServer(httpapi.New(context.Background(), store, nil, quiet))
-	t.Cleanup(srv.Close)
-	for _, k := range []string{"a", "b", "c"} {
-		if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: k, Recipient: "ana", Body: k}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	resp, err := http.Get(srv.URL + "/v1/messages")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var got []struct {
-		ID        int64   `json:"id"`
-		Recipient string  `json:"recipient"`
-		Status    string  `json:"status"`
-		Attempts  int     `json:"attempts"`
-		Worker    *int    `json:"worker"`
-		LastError *string `json:"last_error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK || len(got) != 3 || got[0].ID != 3 || got[2].ID != 1 {
-		t.Fatalf("HTTP %d %+v, esperado as 3 da mais nova pra mais velha", resp.StatusCode, got)
-	}
-	if got[0].Recipient != "ana" || got[0].Status != "pending" || got[0].Worker != nil {
-		t.Fatalf("linha: %+v", got[0])
-	}
-}
-
 // Mudança de estado vira evento SSE, com ping no meio pra proxy não derrubar a conexão parada.
 // Cliente q desconecta libera a conexão LISTEN; servidor desligando fecha o stream.
 func TestEventsStream(t *testing.T) {
-	old := *httpapi.Heartbeat
-	*httpapi.Heartbeat = 20 * time.Millisecond
-	t.Cleanup(func() { *httpapi.Heartbeat = old })
+	old := *sse.Heartbeat
+	*sse.Heartbeat = 20 * time.Millisecond
+	t.Cleanup(func() { *sse.Heartbeat = old })
 
 	pool, store := testdb.New(t, "t_api_sse")
 	ctx, shutdown := context.WithCancel(context.Background())
 	defer shutdown()
-	srv := httptest.NewServer(httpapi.New(ctx, store, nil, quiet))
+	srv := httptest.NewServer(sse.Handler(ctx, app.NewService(store, nil, store, app.Config{}), quiet))
 	t.Cleanup(srv.Close)
 
 	resp, lines := stream(t, srv.URL)
@@ -178,7 +145,8 @@ func TestEventsWithDBDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	srv := httptest.NewServer(httpapi.New(context.Background(), postgres.NewStore(pool), nil, quiet))
+	store := postgres.NewStore(pool)
+	srv := httptest.NewServer(sse.Handler(context.Background(), app.NewService(store, nil, store, app.Config{}), quiet))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/v1/events")

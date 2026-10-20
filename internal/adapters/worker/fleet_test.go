@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
@@ -37,7 +37,7 @@ func TestFleetKillMidSendLeavesRowForReaper(t *testing.T) {
 		return nil
 	})
 	runCtx, cancel := context.WithCancel(ctx)
-	fleet := worker.Start(runCtx, store, sender, cfg, quiet)
+	fleet := startFleet(runCtx, store, sender, cfg)
 	t.Cleanup(func() { cancel(); fleet.Wait() })
 
 	select {
@@ -51,7 +51,7 @@ func TestFleetKillMidSendLeavesRowForReaper(t *testing.T) {
 	if fleet.Kill(0) || fleet.Kill(1) || fleet.Kill(-1) {
 		t.Fatal("Kill aceitou worker caído ou inexistente")
 	}
-	if got := fleet.Workers(); !slices.Equal(got, []worker.WorkerInfo{{ID: 0, Alive: false}}) {
+	if got := fleet.Workers(); !slices.Equal(got, []app.WorkerInfo{{ID: 0, Alive: false}}) {
 		t.Fatalf("workers: %+v", got)
 	}
 
@@ -95,7 +95,7 @@ func TestFleetReviveAfterShutdown(t *testing.T) {
 	cfg := testConfig()
 	cfg.Workers = 2
 	ctx, cancel := context.WithCancel(context.Background())
-	fleet := worker.Start(ctx, store, funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg, quiet)
+	fleet := startFleet(ctx, store, funcSender(func(context.Context, *domain.OutboxEntry) error { return nil }), cfg)
 	fleet.Kill(1)
 	cancel()
 	fleet.Wait()

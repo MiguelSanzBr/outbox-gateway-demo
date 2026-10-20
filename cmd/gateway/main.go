@@ -16,6 +16,8 @@ import (
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/provider"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -38,12 +40,16 @@ func run(ctx context.Context, log *slog.Logger) error {
 
 	cfg := worker.Config{
 		Workers:      envInt("WORKERS", 16),
-		Lease:        envDur("LEASE", 30*time.Second),
 		PollInterval: envDur("POLL_INTERVAL", 50*time.Millisecond),
 		ReapInterval: envDur("REAP_INTERVAL", 5*time.Second),
-		MaxAttempts:  envInt("MAX_ATTEMPTS", 8),
-		BackoffBase:  envDur("BACKOFF_BASE", 200*time.Millisecond),
-		BackoffMax:   envDur("BACKOFF_MAX", 30*time.Second),
+	}
+	appCfg := app.Config{
+		Lease: envDur("LEASE", 30*time.Second),
+		Retry: domain.RetryPolicy{
+			MaxAttempts: envInt("MAX_ATTEMPTS", 8),
+			BackoffBase: envDur("BACKOFF_BASE", 200*time.Millisecond),
+			BackoffMax:  envDur("BACKOFF_MAX", 30*time.Second),
+		},
 	}
 
 	poolCfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
@@ -63,15 +69,16 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 
 	sender := provider.HTTPSender{URL: os.Getenv("PROVIDER_URL"), Client: &http.Client{}}
-	fleet := worker.Start(ctx, store, sender, cfg, log)
-	var admin *worker.Fleet
+	svc := app.NewService(store, sender, store, appCfg)
+	fleet := worker.Start(ctx, svc, cfg, log)
+	var demo *app.Demo
 	if os.Getenv("DEMO_ADMIN") == "1" {
 		// derruba worker por HTTP sem autenticação: só pra demo, nunca em produção
 		log.Warn("DEMO_ADMIN=1: rotas /v1/admin ligadas")
-		admin = fleet
+		demo = app.NewDemo(fleet)
 	}
 
-	srv := &http.Server{Addr: envStr("ADDR", ":8080"), Handler: httpapi.New(ctx, store, admin, log), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: envStr("ADDR", ":8080"), Handler: httpapi.New(ctx, svc, demo, log), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

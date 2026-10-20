@@ -7,55 +7,38 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
-// Sender entrega uma mensagem ao provedor. Deve repassar c.IdempotencyKey para
-// que o provedor descarte reenvios (o worker garante pelo menos uma vez).
-type Sender interface {
-	Send(ctx context.Context, c *domain.OutboxEntry) error
-}
-
 type Config struct {
 	Workers      int
-	Lease        time.Duration // precisa cobrir o envio mais lento; o envio usa no máximo Lease/2
 	PollInterval time.Duration // espera quando a fila está vazia
 	ReapInterval time.Duration
-	MaxAttempts  int
-	BackoffBase  time.Duration
-	BackoffMax   time.Duration
 }
 
 // Run sobe cfg.Workers workers e um reaper; bloqueia até ctx ser cancelado.
-func Run(ctx context.Context, store *postgres.Store, sender Sender, cfg Config, log *slog.Logger) {
-	Start(ctx, store, sender, cfg, log).Wait()
+func Run(ctx context.Context, svc *app.Service, cfg Config, log *slog.Logger) {
+	Start(ctx, svc, cfg, log).Wait()
 }
 
-var errKilled = errors.New("worker derrubado")
-
-// Fleet são os workers e o reaper de um processo. Guarda o cancel de cada worker
-// pra demo conseguir derrubar um no meio do envio e religar depois.
+// Fleet é o adapter q dirige os casos de uso de entrega: workers e reaper de um processo.
+// Guarda o cancel de cada worker pra demo conseguir derrubar um no meio do envio
+// e religar depois (implementa app.WorkerPool).
 type Fleet struct {
-	ctx    context.Context
-	store  *postgres.Store
-	sender Sender
-	cfg    Config
-	log    *slog.Logger
+	ctx context.Context
+	svc *app.Service
+	cfg Config
+	log *slog.Logger
 
 	wg    sync.WaitGroup
 	mu    sync.Mutex
 	kills []context.CancelCauseFunc // nil = worker caído
 }
 
-type WorkerInfo struct {
-	ID    int  `json:"id"`
-	Alive bool `json:"alive"`
-}
-
 // Start sobe os workers e o reaper e volta na hora; Wait espera tudo parar depois do cancel de ctx.
-func Start(ctx context.Context, store *postgres.Store, sender Sender, cfg Config, log *slog.Logger) *Fleet {
-	f := &Fleet{ctx: ctx, store: store, sender: sender, cfg: cfg, log: log, kills: make([]context.CancelCauseFunc, cfg.Workers)}
+func Start(ctx context.Context, svc *app.Service, cfg Config, log *slog.Logger) *Fleet {
+	f := &Fleet{ctx: ctx, svc: svc, cfg: cfg, log: log, kills: make([]context.CancelCauseFunc, cfg.Workers)}
 	f.mu.Lock()
 	for i := range f.kills {
 		f.start(i)
@@ -64,7 +47,7 @@ func Start(ctx context.Context, store *postgres.Store, sender Sender, cfg Config
 	f.wg.Add(1)
 	go func() {
 		defer f.wg.Done()
-		reap(ctx, store, cfg, log.With("component", "reaper"))
+		reap(ctx, svc, cfg, log.With("component", "reaper"))
 	}()
 	return f
 }
@@ -76,7 +59,7 @@ func (f *Fleet) start(i int) {
 	f.wg.Add(1)
 	go func() {
 		defer f.wg.Done()
-		work(ctx, i, f.store, f.sender, f.cfg, f.log.With("worker", i))
+		work(ctx, i, f.svc, f.cfg, f.log.With("worker", i))
 	}()
 }
 
@@ -96,7 +79,7 @@ func (f *Fleet) Kill(id int) bool {
 	if id < 0 || id >= len(f.kills) || f.kills[id] == nil {
 		return false
 	}
-	f.kills[id](errKilled)
+	f.kills[id](app.ErrWorkerKilled)
 	f.kills[id] = nil
 	return true
 }
@@ -118,19 +101,19 @@ func (f *Fleet) Revive() int {
 	return n
 }
 
-func (f *Fleet) Workers() []WorkerInfo {
+func (f *Fleet) Workers() []app.WorkerInfo {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]WorkerInfo, len(f.kills))
+	out := make([]app.WorkerInfo, len(f.kills))
 	for i, kill := range f.kills {
-		out[i] = WorkerInfo{ID: i, Alive: kill != nil}
+		out[i] = app.WorkerInfo{ID: i, Alive: kill != nil}
 	}
 	return out
 }
 
-func work(ctx context.Context, id int, store *postgres.Store, sender Sender, cfg Config, log *slog.Logger) {
+func work(ctx context.Context, id int, svc *app.Service, cfg Config, log *slog.Logger) {
 	for ctx.Err() == nil {
-		c, err := store.Claim(ctx, id, cfg.Lease)
+		c, err := svc.ClaimNext(ctx, id)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Error("claim", "err", err)
@@ -142,34 +125,18 @@ func work(ctx context.Context, id int, store *postgres.Store, sender Sender, cfg
 			sleep(ctx, cfg.PollInterval)
 			continue
 		}
-		process(ctx, store, sender, cfg, log, c)
+		deliver(ctx, svc, log, c)
 	}
 }
 
-func process(ctx context.Context, store *postgres.Store, sender Sender, cfg Config, log *slog.Logger, c *domain.OutboxEntry) {
-	// Envio limitado a metade do lease: o reaper não devolve a linha à fila enquanto ela ainda está em voo.
-	sendCtx, cancel := context.WithTimeout(ctx, cfg.Lease/2)
-	sendErr := sender.Send(sendCtx, c)
-	cancel()
-	if errors.Is(context.Cause(ctx), errKilled) {
+func deliver(ctx context.Context, svc *app.Service, log *slog.Logger, c *domain.OutboxEntry) {
+	t, sendErr, err := svc.Deliver(ctx, c)
+	if errors.Is(err, app.ErrWorkerKilled) {
 		log.Warn("worker derrubado no meio do envio, a linha fica pro reaper", "id", c.ID)
 		return
 	}
-
-	// Finaliza mesmo durante o shutdown, senão a linha fica presa até o lease expirar.
-	doneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-
-	var t domain.Transition
-	var err error
-	if sendErr == nil {
-		t, err = c.Complete()
-	} else {
-		t, err = c.Fail(sendErr, domain.RetryPolicy{MaxAttempts: cfg.MaxAttempts, BackoffBase: cfg.BackoffBase, BackoffMax: cfg.BackoffMax})
+	if sendErr != nil {
 		log.Warn("envio falhou", "id", c.ID, "attempt", c.Attempts, "dead", t.To == domain.Dead, "err", sendErr)
-	}
-	if err == nil {
-		err = store.Finish(doneCtx, c.ID, t)
 	}
 	if errors.Is(err, domain.ErrLeaseLost) {
 		// Outro worker assumiu a linha; o provedor deduplica pela chave de idempotência.
@@ -179,7 +146,7 @@ func process(ctx context.Context, store *postgres.Store, sender Sender, cfg Conf
 	}
 }
 
-func reap(ctx context.Context, store *postgres.Store, cfg Config, log *slog.Logger) {
+func reap(ctx context.Context, svc *app.Service, cfg Config, log *slog.Logger) {
 	t := time.NewTicker(cfg.ReapInterval)
 	defer t.Stop()
 	for {
@@ -188,7 +155,7 @@ func reap(ctx context.Context, store *postgres.Store, cfg Config, log *slog.Logg
 			return
 		case <-t.C:
 		}
-		n, err := store.Reap(ctx, cfg.MaxAttempts)
+		n, err := svc.ReapExpiredLeases(ctx)
 		if err != nil && ctx.Err() == nil {
 			log.Error("reap", "err", err)
 		}

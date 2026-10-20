@@ -18,14 +18,24 @@ import (
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/provider"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-func testConfig() worker.Config {
-	return worker.Config{
+// testCfg junta a config do worker e a dos casos de uso pra o teste mexer num lugar só.
+type testCfg struct {
+	Workers                    int
+	Lease                      time.Duration
+	PollInterval, ReapInterval time.Duration
+	MaxAttempts                int
+	BackoffBase, BackoffMax    time.Duration
+}
+
+func testConfig() testCfg {
+	return testCfg{
 		Workers:      8,
 		Lease:        2 * time.Second,
 		PollInterval: 5 * time.Millisecond,
@@ -36,6 +46,19 @@ func testConfig() worker.Config {
 	}
 }
 
+func (c testCfg) split(store *postgres.Store, sender app.Sender) (*app.Service, worker.Config) {
+	svc := app.NewService(store, sender, store, app.Config{
+		Lease: c.Lease,
+		Retry: domain.RetryPolicy{MaxAttempts: c.MaxAttempts, BackoffBase: c.BackoffBase, BackoffMax: c.BackoffMax},
+	})
+	return svc, worker.Config{Workers: c.Workers, PollInterval: c.PollInterval, ReapInterval: c.ReapInterval}
+}
+
+func startFleet(ctx context.Context, store *postgres.Store, sender app.Sender, c testCfg) *worker.Fleet {
+	svc, wc := c.split(store, sender)
+	return worker.Start(ctx, svc, wc, quiet)
+}
+
 func startProvider(t *testing.T, cfg mockprovider.Config) (*mockprovider.Provider, provider.HTTPSender) {
 	p := mockprovider.New(cfg)
 	srv := httptest.NewServer(p.Handler())
@@ -43,10 +66,11 @@ func startProvider(t *testing.T, cfg mockprovider.Config) (*mockprovider.Provide
 	return p, provider.HTTPSender{URL: srv.URL + "/v1/messages", Client: srv.Client()}
 }
 
-func startWorkers(t *testing.T, store *postgres.Store, sender worker.Sender, cfg worker.Config) {
+func startWorkers(t *testing.T, store *postgres.Store, sender app.Sender, cfg testCfg) {
+	svc, wc := cfg.split(store, sender)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { worker.Run(ctx, store, sender, cfg, quiet); close(done) }()
+	go func() { worker.Run(ctx, svc, wc, quiet); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 }
 
@@ -79,11 +103,12 @@ func (b *logBuffer) waitFor(t *testing.T, msg string) {
 	}
 }
 
-func runWorkers(t *testing.T, store *postgres.Store, sender worker.Sender, cfg worker.Config) *logBuffer {
+func runWorkers(t *testing.T, store *postgres.Store, sender app.Sender, cfg testCfg) *logBuffer {
+	svc, wc := cfg.split(store, sender)
 	logs := &logBuffer{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { worker.Run(ctx, store, sender, cfg, slog.New(slog.NewTextHandler(logs, nil))); close(done) }()
+	go func() { worker.Run(ctx, svc, wc, slog.New(slog.NewTextHandler(logs, nil))); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 	return logs
 }

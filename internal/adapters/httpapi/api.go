@@ -5,45 +5,43 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"time"
 
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/postgres"
-	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/worker"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/adapters/sse"
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/app"
 	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/domain"
 )
 
 const recentLimit = 500
 
-// ping do SSE: proxy e load balancer derrubam conexão parada (o nginx corta em 60 s)
-var heartbeat = 15 * time.Second
-
-// New monta as rotas. ctx é a vida do servidor: quando acaba, os streams SSE fecham,
-// senão o Shutdown fica esperando eles pra sempre. fleet nil desliga /v1/admin.
-func New(ctx context.Context, store *postgres.Store, fleet *worker.Fleet, log *slog.Logger) http.Handler {
-	h := handler{ctx: ctx, store: store, log: log}
+// New monta as rotas. ctx é a vida do servidor (fecha os streams SSE no shutdown).
+// demo nil desliga /v1/admin.
+func New(ctx context.Context, svc *app.Service, demo *app.Demo, log *slog.Logger) http.Handler {
+	h := handler{svc: svc, log: log}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/messages", h.create)
 	mux.HandleFunc("GET /v1/messages", h.list)
 	mux.HandleFunc("GET /v1/messages/{id}", h.get)
-	mux.HandleFunc("GET /v1/events", h.events)
-	if fleet != nil {
+	mux.Handle("GET /v1/events", sse.Handler(ctx, svc, log))
+	if demo != nil {
 		mux.HandleFunc("GET /v1/admin/workers", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, fleet.Workers())
+			writeJSON(w, http.StatusOK, demo.ListWorkers())
 		})
 		mux.HandleFunc("POST /v1/admin/workers/{id}/kill", func(w http.ResponseWriter, r *http.Request) {
 			id, err := strconv.Atoi(r.PathValue("id"))
-			if err != nil || !fleet.Kill(id) {
-				writeError(w, http.StatusNotFound, "worker não existe ou já caiu")
+			if err == nil {
+				err = demo.KillWorker(id)
+			}
+			if err != nil {
+				writeError(w, http.StatusNotFound, app.ErrNoWorker.Error())
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
 		})
 		mux.HandleFunc("POST /v1/admin/workers/revive", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]int{"revived": fleet.Revive()})
+			writeJSON(w, http.StatusOK, map[string]int{"revived": demo.ReviveWorkers()})
 		})
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -51,9 +49,8 @@ func New(ctx context.Context, store *postgres.Store, fleet *worker.Fleet, log *s
 }
 
 type handler struct {
-	ctx   context.Context
-	store *postgres.Store
-	log   *slog.Logger
+	svc *app.Service
+	log *slog.Logger
 }
 
 func (h handler) create(w http.ResponseWriter, r *http.Request) {
@@ -71,14 +68,10 @@ func (h handler) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "JSON inválido")
 		return
 	}
-	m, err := domain.NewMessage(key, in.Recipient, in.Body)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
-		return
-	}
-
-	id, created, err := h.store.Enqueue(r.Context(), m)
+	id, created, err := h.svc.EnqueueMessage(r.Context(), key, in.Recipient, in.Body)
 	switch {
+	case errors.Is(err, domain.ErrInvalidContent):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, domain.ErrKeyConflict):
 		writeError(w, http.StatusConflict, err.Error())
 	case err != nil:
@@ -97,7 +90,7 @@ func (h handler) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id inválido")
 		return
 	}
-	st, err := h.store.Get(r.Context(), id)
+	st, err := h.svc.GetMessage(r.Context(), id)
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
@@ -110,55 +103,13 @@ func (h handler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h handler) list(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.store.Recent(r.Context(), recentLimit)
+	rows, err := h.svc.RecentChanges(r.Context(), recentLimit)
 	if err != nil {
 		h.log.Error("list", "err", err)
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
-}
-
-// events manda cada mudança de estado da outbox como evento SSE. Não guarda nada:
-// quem reconecta busca a foto de novo em GET /v1/messages.
-func (h handler) events(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	defer context.AfterFunc(h.ctx, cancel)()
-
-	ch, err := h.store.Listen(ctx)
-	if err != nil {
-		h.log.Error("listen", "err", err)
-		writeError(w, http.StatusInternalServerError, "erro interno")
-		return
-	}
-	// Listen só fecha o canal depois de largar a conexão; drenar garante q ela não vaza
-	defer func() {
-		cancel()
-		for range ch {
-		}
-	}()
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	rc := http.NewResponseController(w)
-	_ = rc.Flush()
-	tick := time.NewTicker(heartbeat)
-	defer tick.Stop()
-	for {
-		select {
-		case c, ok := <-ch:
-			if !ok {
-				return // cliente saiu, servidor desligando ou LISTEN caiu; o EventSource reconecta sozinho
-			}
-			p, _ := json.Marshal(c) // Change só tem tipo simples, Marshal não falha
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", p)
-		case <-tick.C:
-			_, _ = fmt.Fprint(w, ": ping\n\n")
-		}
-		_ = rc.Flush()
-	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
