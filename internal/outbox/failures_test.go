@@ -88,7 +88,7 @@ func TestStoreSurfacesDBErrors(t *testing.T) {
 	if _, _, err := store.Enqueue(ctx, "k", "ana", "oi"); err == nil {
 		t.Error("Enqueue sem erro com banco fora")
 	}
-	if _, err := store.Claim(ctx, time.Second); err == nil {
+	if _, err := store.Claim(ctx, 0, time.Second); err == nil {
 		t.Error("Claim sem erro com banco fora")
 	}
 	if err := store.MarkSent(ctx, c); err == nil || errors.Is(err, outbox.ErrLeaseLost) {
@@ -142,7 +142,7 @@ func TestMarkFailedWithStaleLease(t *testing.T) {
 	if _, _, err := store.Enqueue(ctx, "k", "ana", "oi"); err != nil {
 		t.Fatal(err)
 	}
-	c, err := store.Claim(ctx, time.Minute)
+	c, err := store.Claim(ctx, 0, time.Minute)
 	if err != nil || c == nil {
 		t.Fatalf("claim: %v", err)
 	}

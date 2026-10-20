@@ -149,7 +149,7 @@ func TestReaperRecoversWorkerKilledMidSend(t *testing.T) {
 		}
 	}
 
-	dying, err := store.Claim(ctx, 200*time.Millisecond)
+	dying, err := store.Claim(ctx, 0, 200*time.Millisecond)
 	if err != nil || dying == nil || dying.IdempotencyKey != "m1" {
 		t.Fatalf("claim: %+v err=%v", dying, err)
 	}
@@ -157,7 +157,7 @@ func TestReaperRecoversWorkerKilledMidSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Enquanto m1 está em voo, m2 (mesmo destinatário) não pode ser reivindicada.
-	if c, err := store.Claim(ctx, time.Second); err != nil || c != nil {
+	if c, err := store.Claim(ctx, 0, time.Second); err != nil || c != nil {
 		t.Fatalf("m2 reivindicada com m1 em voo: %+v err=%v", c, err)
 	}
 
@@ -183,7 +183,7 @@ func TestStaleLeaseCannotFinish(t *testing.T) {
 	if _, _, err := store.Enqueue(ctx, "k", "bia", "oi"); err != nil {
 		t.Fatal(err)
 	}
-	stale, err := store.Claim(ctx, time.Millisecond)
+	stale, err := store.Claim(ctx, 0, time.Millisecond)
 	if err != nil || stale == nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestStaleLeaseCannotFinish(t *testing.T) {
 	if n, err := store.Reap(ctx, 10); err != nil || n != 1 {
 		t.Fatalf("reap: n=%d err=%v", n, err)
 	}
-	fresh, err := store.Claim(ctx, time.Minute)
+	fresh, err := store.Claim(ctx, 0, time.Minute)
 	if err != nil || fresh == nil {
 		t.Fatalf("novo claim: %v", err)
 	}

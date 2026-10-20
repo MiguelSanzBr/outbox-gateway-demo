@@ -60,7 +60,7 @@ func TestListenStreamsStateChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c, err := store.Claim(ctx, time.Millisecond); err != nil || c == nil {
+	if c, err := store.Claim(ctx, 7, time.Millisecond); err != nil || c == nil {
 		t.Fatalf("claim: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
@@ -75,6 +75,9 @@ func TestListenStreamsStateChanges(t *testing.T) {
 		e := nextEvent(t, ch, who)
 		if e.ID != id || e.Status != want.status || e.Attempts != want.attempts {
 			t.Fatalf("evento %d: %+v, esperado id=%d %+v", i, e, id, want)
+		}
+		if i == 1 && (e.Worker == nil || *e.Worker != 7) {
+			t.Fatalf("evento do claim sem o worker: %+v", e)
 		}
 		if i == 2 && (e.LastError == nil || *e.LastError != "lease expirado") {
 			t.Fatalf("evento do reaper sem o motivo: %+v", e)
