@@ -103,3 +103,32 @@ func TestFleetReviveAfterShutdown(t *testing.T) {
 		t.Fatalf("Revive depois do shutdown = %d", n)
 	}
 }
+
+// SIGTERM de verdade na fleet com envio em voo na última tentativa: o envio termina,
+// a linha vira sent e a tentativa não é queimada por causa do deploy.
+func TestFleetShutdownMidSendDelivers(t *testing.T) {
+	_, store := testdb.New(t, "t_fleet_sigterm")
+	ctx := context.Background()
+	id, _, err := store.Enqueue(ctx, domain.Message{IdempotencyKey: "k", Recipient: "ana", Body: "oi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.Workers = 1
+	cfg.MaxAttempts = 1
+	inSend := make(chan struct{})
+	sender := funcSender(func(sendCtx context.Context, _ *domain.OutboxEntry) error {
+		close(inSend)
+		time.Sleep(100 * time.Millisecond) // o shutdown chega aqui no meio
+		return sendCtx.Err()
+	})
+	runCtx, shutdown := context.WithCancel(ctx)
+	fleet := startFleet(runCtx, store, sender, cfg)
+	<-inSend
+	shutdown()
+	fleet.Wait()
+
+	if st, err := store.Get(ctx, id); err != nil || st.Status != domain.Sent || st.Attempts != 1 {
+		t.Fatalf("depois do shutdown: %+v err=%v, esperado sent com 1 tentativa", st, err)
+	}
+}
