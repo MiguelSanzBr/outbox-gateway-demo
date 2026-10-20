@@ -28,10 +28,10 @@ func URL(t *testing.T) string {
 	return url
 }
 
-// New cria um schema só desse teste (nome + sufixo aleatório, pra duas execuções
-// no mesmo banco não apagarem o schema uma da outra) e devolve um Store migrado.
-// O schema é apagado no fim do teste.
-func New(t *testing.T, name string) (*pgxpool.Pool, *postgres.Store) {
+// Pool cria um schema só desse teste (nome + sufixo aleatório, pra duas execuções
+// no mesmo banco não apagarem o schema uma da outra) e devolve um pool apontado pra
+// ele, sem migrar. O schema é apagado no fim do teste.
+func Pool(t *testing.T, name string) *pgxpool.Pool {
 	t.Helper()
 	url := URL(t)
 	ctx := context.Background()
@@ -63,9 +63,15 @@ func New(t *testing.T, name string) (*pgxpool.Pool, *postgres.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
+	return pool
+}
 
+// New é o Pool já migrado, com o Store por cima.
+func New(t *testing.T, name string) (*pgxpool.Pool, *postgres.Store) {
+	t.Helper()
+	pool := Pool(t, name)
 	store := postgres.NewStore(pool)
-	if err := store.Migrate(ctx); err != nil {
+	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	return pool, store
