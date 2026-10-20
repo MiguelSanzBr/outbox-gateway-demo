@@ -150,8 +150,7 @@ func TestMainExitsWithOneOnError(t *testing.T) {
 	}
 }
 
-// Admin da demo só existe com DEMO_ADMIN=1. E um SSE aberto não pode segurar o shutdown
-// (sem fechar os streams, o Shutdown espera os 10 s inteiros).
+// Admin da demo só existe com DEMO_ADMIN=1. E o shutdown fecha os streams SSE abertos.
 func TestRunDemoAdminFlagAndSSEShutdown(t *testing.T) {
 	needDB(t)
 	for _, c := range []struct {
@@ -191,6 +190,14 @@ func TestRunDemoAdminFlagAndSSEShutdown(t *testing.T) {
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("shutdown preso no stream SSE")
+			}
+			// o stream tem q terminar junto, não ficar pendurado com a conexão LISTEN aberta
+			eof := make(chan struct{})
+			go func() { _, _ = io.Copy(io.Discard, sse.Body); close(eof) }()
+			select {
+			case <-eof:
+			case <-time.After(3 * time.Second):
+				t.Fatal("stream SSE continuou aberto depois do shutdown")
 			}
 		})
 	}
