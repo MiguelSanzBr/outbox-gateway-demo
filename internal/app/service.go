@@ -12,7 +12,7 @@ import (
 var ErrWorkerKilled = errors.New("worker derrubado")
 
 type Config struct {
-	Lease time.Duration // precisa cobrir o envio mais lento: o envio usa até Lease/2 e a finalização até Lease/4
+	Lease time.Duration // precisa cobrir o envio mais lento: o envio é cortado em Lease/2
 	Retry domain.RetryPolicy
 }
 
@@ -56,7 +56,7 @@ func (s *Service) StreamEvents(ctx context.Context) (<-chan Change, error) {
 // saber, e a linha ficaria presa em sending até o reaper. Se o shutdown chegou, o
 // Deliver devolve a linha sem gastar a tentativa.
 func (s *Service) ClaimNext(ctx context.Context, worker int) (*domain.OutboxEntry, error) {
-	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.Lease/4)
+	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.Lease)
 	defer cancel()
 	return s.repo.Claim(claimCtx, worker, s.cfg.Lease)
 }
@@ -87,9 +87,11 @@ func (s *Service) FailDelivery(ctx context.Context, c *domain.OutboxEntry, cause
 // sending pro reaper, como num kill -9. Se o shutdown chegou antes do envio, a linha
 // volta pra fila sem gastar a tentativa.
 func (s *Service) Deliver(ctx context.Context, c *domain.OutboxEntry) (t domain.Transition, sendErr, err error) {
-	// a finalização tem prazo próprio e também não é cortada pelo shutdown
+	// A finalização também não é cortada pelo shutdown e tem até um lease. Desistir antes
+	// não evita duplicata (a linha ficaria em sending até o reaper, e outro worker reenviaria);
+	// se o lease vencer e o reaper chegar primeiro, quem recusa a gravação é o fencing.
 	doneCtx := func() (context.Context, context.CancelFunc) {
-		return context.WithTimeout(context.WithoutCancel(ctx), s.cfg.Lease/4)
+		return context.WithTimeout(context.WithoutCancel(ctx), s.cfg.Lease)
 	}
 	if ctx.Err() != nil && !killed(ctx) {
 		fctx, cancel := doneCtx()
@@ -117,7 +119,6 @@ func (s *Service) Deliver(ctx context.Context, c *domain.OutboxEntry) (t domain.
 		return t, sendErr, ErrWorkerKilled
 	}
 
-	// Lease/2 do envio + Lease/4 daqui ainda cabem no lease
 	fctx, cancelDone := doneCtx()
 	defer cancelDone()
 	if sendErr == nil {
