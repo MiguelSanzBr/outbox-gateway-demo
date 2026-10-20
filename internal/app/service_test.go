@@ -89,8 +89,8 @@ func inFlight() *domain.OutboxEntry {
 
 var lease = app.Config{Lease: 2 * time.Second, Retry: domain.RetryPolicy{MaxAttempts: 1}}
 
-// O envio é cortado na metade do lease (o reaper só devolve depois do lease inteiro,
-// então nunca pega linha em voo) e a finalização tem prazo de um quarto.
+// O envio é cortado na metade do lease: o reaper só devolve depois do lease inteiro,
+// então nunca pega linha em voo.
 func TestDeliverDeadlines(t *testing.T) {
 	repo := &recordingRepo{}
 	var sendLeft time.Duration
@@ -105,8 +105,34 @@ func TestDeliverDeadlines(t *testing.T) {
 	if sendLeft <= 0 || sendLeft > time.Second {
 		t.Fatalf("prazo do envio = %s, esperado até Lease/2 (1 s)", sendLeft)
 	}
-	if repo.deadline <= 0 || repo.deadline > 500*time.Millisecond {
-		t.Fatalf("prazo do Finish = %s, esperado até Lease/4", repo.deadline)
+	if repo.deadline <= 0 || repo.deadline > 2*time.Second {
+		t.Fatalf("prazo do Finish = %s, esperado até um lease", repo.deadline)
+	}
+}
+
+// slowRepo demora pra gravar, como o banco sob carga.
+type slowRepo struct {
+	fakeRepo
+	delay time.Duration
+}
+
+func (r *slowRepo) Finish(ctx context.Context, id int64, t domain.Transition) error {
+	select {
+	case <-time.After(r.delay):
+		return r.fakeRepo.Finish(ctx, id, t)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Finalização lenta (banco sob carga) ainda grava em vez de desistir. Desistir não evita
+// duplicata nenhuma: a linha ficaria em sending, o reaper devolveria e outro worker
+// reenviaria. Se o lease vencer e o reaper chegar antes, quem recusa é o fencing.
+func TestSlowFinishStillLands(t *testing.T) {
+	repo := &slowRepo{delay: 800 * time.Millisecond} // mais q Lease/4 (500 ms), menos q o lease
+	svc := app.NewService(repo, senderFunc(func(context.Context, *domain.OutboxEntry) error { return nil }), nil, lease)
+	if tr, _, err := svc.Deliver(context.Background(), inFlight()); err != nil || tr.To != domain.Sent || len(repo.finished) != 1 {
+		t.Fatalf("finalização lenta: %+v err=%v gravadas=%d", tr, err, len(repo.finished))
 	}
 }
 
