@@ -29,10 +29,18 @@ services:
       WORKERS: ${WORKERS:-16}
       LEASE: ${LEASE:-10s}
       REAP_INTERVAL: 2s
+      # rotas de derrubar worker, só pra demo: nunca ligue em produção
+      DEMO_ADMIN: ${DEMO_ADMIN:-0}
     ports: ["8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }
       mockprovider: { condition: service_started }
+
+  dashboard:
+    build: ./dashboard
+    ports: ["5180:80"]
+    depends_on:
+      gateway: { condition: service_started }
 
   k6:
     image: grafana/k6:1.3.0
