@@ -2,4 +2,4 @@
 // (tem pacote Go dentro de dependência npm).
 module github.com/MiguelSanzBr/outbox-gateway-demo/dashboard
 
-go 1.25.0
+go 1.26.0
