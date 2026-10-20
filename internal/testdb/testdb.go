@@ -3,6 +3,8 @@ package testdb
 
 import (
 	"context"
+	"fmt"
+	"math/rand/v2"
 	"os"
 	"testing"
 	"time"
@@ -12,31 +14,48 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// New recria o schema e devolve um Store migrado. Pula o teste sem DATABASE_URL.
-func New(t *testing.T, schema string) (*pgxpool.Pool, *postgres.Store) {
+// URL devolve o DATABASE_URL. Sem ele o teste pula, menos no CI, onde pular
+// em silêncio deixaria a suíte verde sem testar nada.
+func URL(t *testing.T) string {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("DATABASE_URL não definido no CI")
+		}
 		t.Skip("DATABASE_URL não definido; suba o Postgres com `docker compose up -d postgres`")
 	}
-	ctx := context.Background()
+	return url
+}
 
-	admin, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = admin.Close(ctx) }()
+// New cria um schema só desse teste (nome + sufixo aleatório, pra duas execuções
+// no mesmo banco não apagarem o schema uma da outra) e devolve um Store migrado.
+// O schema é apagado no fim do teste.
+func New(t *testing.T, name string) (*pgxpool.Pool, *postgres.Store) {
+	t.Helper()
+	url := URL(t)
+	ctx := context.Background()
+	schema := fmt.Sprintf("%s_%08x", name, rand.Uint32())
 	ident := pgx.Identifier{schema}.Sanitize()
-	if _, err := admin.Exec(ctx, "DROP SCHEMA IF EXISTS "+ident+" CASCADE; CREATE SCHEMA "+ident); err != nil {
-		t.Fatal(err)
+	exec := func(sql string) {
+		admin, err := pgx.Connect(ctx, url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = admin.Close(ctx) }()
+		if _, err := admin.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
 	}
+	exec("CREATE SCHEMA " + ident)
+	t.Cleanup(func() { exec("DROP SCHEMA " + ident + " CASCADE") })
 
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	// application_name = schema pra o teste achar as conexões dele no pg_stat_activity
+	// application_name = schema pra o teste achar as conexões dele no pg_stat_activity (ver AppName)
 	cfg.ConnConfig.RuntimeParams["application_name"] = schema
 	cfg.MaxConns = 32
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -50,6 +69,11 @@ func New(t *testing.T, schema string) (*pgxpool.Pool, *postgres.Store) {
 		t.Fatal(err)
 	}
 	return pool, store
+}
+
+// AppName é o application_name das conexões do pool, único por teste.
+func AppName(pool *pgxpool.Pool) string {
+	return pool.Config().ConnConfig.RuntimeParams["application_name"]
 }
 
 // Broken devolve um Store com o pool já fechado: é o banco fora do ar, sem mock.

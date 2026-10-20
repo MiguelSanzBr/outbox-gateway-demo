@@ -10,18 +10,13 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/MiguelSanzBr/outbox-gateway-demo/internal/testdb"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-func needDB(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL não definido; suba o Postgres com `docker compose up -d postgres`")
-	}
-	return url
-}
+func needDB(t *testing.T) string { return testdb.URL(t) }
 
 func freeAddr(t *testing.T) string {
 	t.Helper()

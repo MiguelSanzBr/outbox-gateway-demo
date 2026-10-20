@@ -79,23 +79,23 @@ func waitClosed(t *testing.T, lines <-chan string) {
 }
 
 // listeners conta as conexões LISTEN abertas por este teste (application_name = schema).
-func listeners(t *testing.T, pool *pgxpool.Pool, schema string) int {
+func listeners(t *testing.T, pool *pgxpool.Pool, app string) int {
 	t.Helper()
 	var n int
 	if err := pool.QueryRow(context.Background(), `
 		SELECT count(*) FROM pg_stat_activity WHERE application_name = $1 AND query = 'LISTEN outbox_events'`,
-		schema).Scan(&n); err != nil {
+		app).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
 }
 
-func waitListeners(t *testing.T, pool *pgxpool.Pool, schema string, want int) {
+func waitListeners(t *testing.T, pool *pgxpool.Pool, app string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for listeners(t, pool, schema) != want {
+	for listeners(t, pool, app) != want {
 		if time.Now().After(deadline) {
-			t.Fatalf("conexões LISTEN = %d, esperado %d", listeners(t, pool, schema), want)
+			t.Fatalf("conexões LISTEN = %d, esperado %d", listeners(t, pool, app), want)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -128,15 +128,15 @@ func TestEventsStream(t *testing.T) {
 	})
 	waitLine(t, lines, func(l string) bool { return l == ": ping" })
 
-	waitListeners(t, pool, "t_api_sse", 1)
+	waitListeners(t, pool, testdb.AppName(pool), 1)
 	_ = resp.Body.Close()
-	waitListeners(t, pool, "t_api_sse", 0)
+	waitListeners(t, pool, testdb.AppName(pool), 0)
 
 	_, lines = stream(t, srv.URL)
-	waitListeners(t, pool, "t_api_sse", 1)
+	waitListeners(t, pool, testdb.AppName(pool), 1)
 	shutdown()
 	waitClosed(t, lines)
-	waitListeners(t, pool, "t_api_sse", 0)
+	waitListeners(t, pool, testdb.AppName(pool), 0)
 }
 
 func TestEventsWithDBDown(t *testing.T) {
