@@ -1,0 +1,26 @@
+version: "2"
+
+linters:
+  # além do padrão (errcheck, govet, ineffassign, staticcheck, unused)
+  # contextcheck fica de fora: ele reclama de context.WithoutCancel, q aqui é de
+  # propósito (o shutdown não corta envio nem finalização).
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - noctx
+    - unparam
+  settings:
+    gosec:
+      excludes:
+        - G404 # math/rand só no jitter do backoff, do mock e no nome do schema de teste
+  exclusions:
+    rules:
+      # teste pode fazer request sem ctx e ler arquivo do próprio repo
+      - path: _test\.go
+        linters: [noctx, gosec]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

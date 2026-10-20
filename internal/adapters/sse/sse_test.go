@@ -119,10 +119,13 @@ func TestEventsStream(t *testing.T) {
 	}
 	resp2, _ := stream(t, srv.URL)
 	waitListeners(t, pool, app, 1)
-	if full, err := http.Get(srv.URL + "/v1/events"); err != nil || full.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("terceiro stream com teto 2: %v %v, esperado 503", full.StatusCode, err)
-	} else {
-		_ = full.Body.Close()
+	full, err := http.Get(srv.URL + "/v1/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = full.Body.Close()
+	if full.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("terceiro stream com teto 2: HTTP %d, esperado 503", full.StatusCode)
 	}
 
 	if _, _, err := store.Enqueue(context.Background(), domain.Message{IdempotencyKey: "k", Recipient: "sse-ana", Body: "oi"}); err != nil {
@@ -142,7 +145,8 @@ func TestEventsStream(t *testing.T) {
 	_ = resp2.Body.Close()
 	waitListeners(t, pool, app, 0)
 
-	_, lines = stream(t, srv.URL)
+	last, lines := stream(t, srv.URL)
+	defer func() { _ = last.Body.Close() }()
 	waitListeners(t, pool, app, 1)
 	shutdown()
 	waitClosed(t, lines)

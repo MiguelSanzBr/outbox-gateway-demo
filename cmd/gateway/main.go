@@ -46,7 +46,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	var pool *pgxpool.Pool
 	if err == nil {
-		poolCfg.MaxConns = int32(cfg.Worker.Workers + 16) // workers + API; o LISTEN do SSE é uma conexão à parte
+		// workers + API; o LISTEN do SSE é uma conexão à parte
+		poolCfg.MaxConns = int32(cfg.Worker.Workers + 16) //nolint:gosec // WORKERS validado entre 1 e 1024 no loadConfig
 		pool, err = pgxpool.NewWithConfig(ctx, poolCfg)
 	}
 	if err != nil {
@@ -85,7 +86,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	go func() {
 		defer close(drained)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()

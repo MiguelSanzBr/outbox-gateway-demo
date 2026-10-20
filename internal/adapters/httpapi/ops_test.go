@@ -125,7 +125,7 @@ func TestAccessLogWithRequestID(t *testing.T) {
 	srv := httptest.NewServer(httpapi.New(context.Background(), app.NewService(store, nil, store, app.Config{}), nil, log))
 	t.Cleanup(srv.Close)
 
-	send := func(id, path string) *http.Response {
+	send := func(id, path string) http.Header {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL+path, nil)
 		if id != "" {
 			req.Header.Set("X-Request-Id", id)
@@ -135,13 +135,13 @@ func TestAccessLogWithRequestID(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = resp.Body.Close()
-		return resp
+		return resp.Header
 	}
-	if got := send("pedido-42", "/v1/messages/999").Header.Get("X-Request-Id"); got != "pedido-42" {
+	if got := send("pedido-42", "/v1/messages/999").Get("X-Request-Id"); got != "pedido-42" {
 		t.Fatalf("X-Request-Id = %q, esperado o do cliente", got)
 	}
 	for _, bad := range []string{"", "com espaço", strings.Repeat("x", 65)} {
-		if got := send(bad, "/healthz").Header.Get("X-Request-Id"); got == "" || got == bad {
+		if got := send(bad, "/healthz").Get("X-Request-Id"); got == "" || got == bad {
 			t.Fatalf("id %q: resposta com %q, esperado um gerado", bad, got)
 		}
 	}

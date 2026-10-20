@@ -18,7 +18,7 @@ import (
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-func needDB(t *testing.T) string { return testdb.URL(t) }
+func needDB(t *testing.T) { testdb.URL(t) }
 
 func freeAddr(t *testing.T) string {
 	t.Helper()
@@ -79,6 +79,7 @@ func TestLoadConfigFailsFast(t *testing.T) {
 	}{
 		{env("WORKERS", "abc"), []string{"WORKERS"}},
 		{env("WORKERS", "0"), []string{"WORKERS"}},
+		{env("WORKERS", "5000"), []string{"WORKERS"}},
 		{env("REAP_INTERVAL", "0s"), []string{"REAP_INTERVAL"}},
 		{env("POLL_INTERVAL", "-1s"), []string{"POLL_INTERVAL"}},
 		{env("LEASE", "10"), []string{"LEASE"}}, // sem unidade
@@ -254,13 +255,16 @@ func TestRunWaitsInFlightRequests(t *testing.T) {
 	body, w := io.Pipe()
 	req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/messages", body)
 	req.Header.Set("Idempotency-Key", fmt.Sprintf("drain-%d", time.Now().UnixNano()))
-	resp := make(chan *http.Response, 1)
+	code := make(chan int, 1)
 	go func() {
 		r, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Error(err)
+			code <- 0
+			return
 		}
-		resp <- r
+		_ = r.Body.Close()
+		code <- r.StatusCode
 	}()
 	_, _ = io.WriteString(w, `{"recipient":"drain",`)
 	time.Sleep(100 * time.Millisecond) // a requisição já está no handler, lendo o corpo
@@ -269,13 +273,8 @@ func TestRunWaitsInFlightRequests(t *testing.T) {
 	_, _ = io.WriteString(w, `"body":"oi"}`)
 	_ = w.Close()
 
-	r := <-resp
-	if r == nil {
-		t.Fatal("sem resposta")
-	}
-	_ = r.Body.Close()
-	if r.StatusCode != http.StatusAccepted {
-		t.Fatalf("requisição em voo no shutdown: HTTP %d, esperado 202", r.StatusCode)
+	if c := <-code; c != http.StatusAccepted {
+		t.Fatalf("requisição em voo no shutdown: HTTP %d, esperado 202", c)
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)

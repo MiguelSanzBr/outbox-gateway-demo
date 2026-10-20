@@ -96,7 +96,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	u, err := url.Parse(c.ProviderURL)
 	e.check(err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "",
 		"PROVIDER_URL=%q precisa ser uma URL http(s)", c.ProviderURL)
-	e.check(c.Worker.Workers >= 1, "WORKERS precisa ser pelo menos 1")
+	e.check(c.Worker.Workers >= 1 && c.Worker.Workers <= 1024, "WORKERS precisa ficar entre 1 e 1024")
 	e.check(c.Worker.PollInterval > 0, "POLL_INTERVAL precisa ser maior q zero")
 	e.check(c.Worker.ReapInterval > 0, "REAP_INTERVAL precisa ser maior q zero")
 	e.check(c.App.Lease > 0, "LEASE precisa ser maior q zero (o envio usa até metade dele)")
