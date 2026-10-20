@@ -155,3 +155,38 @@ func TestKilledWorkerCutsSend(t *testing.T) {
 		t.Fatalf("err=%v gravadas=%d, esperado ErrWorkerKilled sem gravar", err, len(repo.finished))
 	}
 }
+
+// Contadores de entrega pro /metrics: cada resultado gravado conta uma vez, e o q não
+// chegou a ser gravado (erro do banco) não conta.
+func TestDeliveryCounters(t *testing.T) {
+	repo := &recordingRepo{fakeRepo: fakeRepo{finishOf: map[int64]error{}}}
+	fail := errors.New("provedor: HTTP 503")
+	var sendErr error
+	svc := app.NewService(repo, senderFunc(func(context.Context, *domain.OutboxEntry) error { return sendErr }), nil,
+		app.Config{Lease: time.Second, Retry: domain.RetryPolicy{MaxAttempts: 2}})
+	deliver := func(attempts int, err error, finishErr error) {
+		sendErr = err
+		e := inFlight()
+		e.Attempts = attempts
+		repo.finishOf[e.ID] = finishErr
+		_, _, _ = svc.Deliver(context.Background(), e)
+	}
+	deliver(1, nil, nil)                      // sent
+	deliver(1, fail, nil)                     // retry
+	deliver(2, fail, nil)                     // dead (última tentativa)
+	deliver(1, nil, domain.ErrLeaseLost)      // lease perdido
+	deliver(1, nil, errors.New("banco caiu")) // não gravou: não conta
+	ctx, shutdown := context.WithCancel(context.Background())
+	shutdown()
+	repo.finishOf[7] = nil
+	_, _, _ = svc.Deliver(ctx, inFlight()) // release
+
+	repo.expired = []domain.OutboxEntry{{ID: 8, Status: domain.Sending, Attempts: 2, Lease: domain.Lease{Token: "t"}}}
+	if _, err := svc.ReapExpiredLeases(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := app.DeliveryCounts{Sent: 1, Retried: 1, Dead: 2, LeaseLost: 1, Released: 1, Reaped: 1}
+	if got := svc.Deliveries(); got != want {
+		t.Fatalf("contadores %+v, esperado %+v", got, want)
+	}
+}
