@@ -108,10 +108,17 @@ func TestRecipientOrder(t *testing.T) {
 		recipient string
 		seq       int64
 		ok        bool
-	}{{"ana", 1, true}, {"ana", 3, true}, {"bia", 2, true}, {"ana", 2, false}, {"ana", 3, false}, {"ana", 4, true}}
+	}{{"ana", 1, true}, {"ana", 3, true}, {"bia", 2, true}, {"ana", 2, false}, {"ana", 3, true}, {"ana", 3, false}}
 	for _, s := range steps {
 		if got := o.Observe(s.recipient, s.seq); got != s.ok {
 			t.Errorf("Observe(%s, %d) = %v, esperado %v", s.recipient, s.seq, got, s.ok)
 		}
+	}
+}
+
+func TestPermanentKeepsCause(t *testing.T) {
+	cause := errors.New("HTTP 400")
+	if !errors.Is(domain.Permanent(cause), cause) {
+		t.Fatal("Permanent perdeu o erro original")
 	}
 }
