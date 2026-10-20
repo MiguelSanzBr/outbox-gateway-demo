@@ -111,16 +111,22 @@ func (f *Fleet) Workers() []app.WorkerInfo {
 	return out
 }
 
+// maxErrorWait é o teto da espera entre erros de claim seguidos (banco fora).
+const maxErrorWait = 5 * time.Second
+
 func work(ctx context.Context, id int, svc *app.Service, cfg Config, log *slog.Logger) {
+	errWait := cfg.PollInterval
 	for ctx.Err() == nil {
 		c, err := svc.ClaimNext(ctx, id)
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Error("claim", "err", err)
+				log.Error("claim", "err", err, "retry_in", errWait)
 			}
-			sleep(ctx, cfg.PollInterval)
+			sleep(ctx, errWait)
+			errWait = min(errWait*2, maxErrorWait)
 			continue
 		}
+		errWait = cfg.PollInterval
 		if c == nil {
 			sleep(ctx, cfg.PollInterval)
 			continue
