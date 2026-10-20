@@ -17,6 +17,9 @@ export type Action = { type: 'rows'; rows: Msg[]; live: boolean } | { type: 'not
 export const emptyBoard: Board = { msgs: new Map(), notes: [], seq: 0 }
 
 const maxNotes = 8
+// Mesma janela da foto (GET /v1/messages devolve as 500 mais novas): com o painel aberto
+// durante o k6 o estado não cresce sem fim.
+export const maxMsgs = 500
 
 // Só avisa o q importa: avisar cada sent numa rajada afoga o leitor de tela.
 function noteFor(m: Msg): string | null {
@@ -30,14 +33,19 @@ function addNote(b: Board, text: string): Board {
 }
 
 // reducer junta a foto inicial (live=false) e os eventos ao vivo sem voltar estado pra trás.
+// Copia o Map uma vez por ação, não uma por linha.
 export function reducer(b: Board, a: Action): Board {
   if (a.type === 'note') return addNote(b, a.text)
   let next = b
+  let msgs: Map<number, Msg> | null = null
   for (const m of a.rows) {
-    if (!isNewer(m, next.msgs.get(m.id))) continue
-    next = { ...next, msgs: new Map(next.msgs).set(m.id, m) }
+    if (!isNewer(m, (msgs ?? b.msgs).get(m.id))) continue
+    msgs ??= new Map(b.msgs)
+    msgs.set(m.id, m)
     const text = a.live ? noteFor(m) : null
     if (text) next = addNote(next, text)
   }
-  return next
+  if (!msgs) return b
+  while (msgs.size > maxMsgs) msgs.delete(Math.min(...msgs.keys()))
+  return { ...next, msgs }
 }

@@ -3,13 +3,17 @@ import { useEffect, useReducer, useState } from 'react'
 import { emptyBoard, reducer } from '../../application/board'
 import { enqueueBurst } from '../../application/burst'
 import type { GatewayApi, GatewayEvents } from '../../application/ports'
-import { counts, lanes, reaped, type Msg, type Status } from '../../domain/message'
+import { maxMsgs } from '../../application/board'
+import type { Worker } from '../../application/ports'
+import { counts, lanes, reaped, statuses, type Msg } from '../../domain/message'
 import './app.css'
 
 const burstSize = 20
 const burstRecipients = 4
 const maxLanes = 12
-const statuses: Status[] = ['pending', 'sending', 'sent', 'dead']
+
+// Sem DEMO_ADMIN (null) não tem o q consultar: senão são 3.600 404 por hora no log.
+export const workersPoll = (data: Worker[] | null | undefined) => (data === null ? false : 1000)
 
 function label(m: Msg): string {
   const parts = [`mensagem ${m.id}: ${m.status}`]
@@ -29,7 +33,11 @@ export function App({ api, events }: { api: GatewayApi; events: GatewayEvents })
   const note = (text: string) => dispatch({ type: 'note', text })
 
   const snapshot = useQuery({ queryKey: ['messages'], queryFn: () => api.listMessages() })
-  const workers = useQuery({ queryKey: ['workers'], queryFn: () => api.listWorkers(), refetchInterval: 1000 })
+  const workers = useQuery({
+    queryKey: ['workers'],
+    queryFn: () => api.listWorkers(),
+    refetchInterval: (q) => workersPoll(q.state.data),
+  })
 
   useEffect(() => {
     if (snapshot.data) dispatch({ type: 'rows', rows: snapshot.data, live: false })
@@ -59,6 +67,7 @@ export function App({ api, events }: { api: GatewayApi; events: GatewayEvents })
   const revive = useMutation({
     mutationFn: () => api.reviveWorkers(),
     onSuccess: (n) => note(`${n} worker(s) religado(s)`),
+    onError: (e) => note(`não deu pra religar: ${message(e)}`),
     onSettled: refreshWorkers,
   })
   const burst = useMutation({
@@ -87,6 +96,7 @@ export function App({ api, events }: { api: GatewayApi; events: GatewayEvents })
 
         <section aria-labelledby="h-estados">
           <h2 id="h-estados">Estados</h2>
+          <p className="hint">nas últimas {maxMsgs} mensagens</p>
           <dl className="counters">
             {statuses.map((s) => (
               <div key={s} className={`chip st-${s}`}>
@@ -146,6 +156,10 @@ export function App({ api, events }: { api: GatewayApi; events: GatewayEvents })
 
         <section aria-labelledby="h-raias">
           <h2 id="h-raias">Por destinatário</h2>
+          {snapshot.isPending && <p className="hint">carregando as mensagens…</p>}
+          {snapshot.isSuccess && msgs.length === 0 && (
+            <p className="hint">Nenhuma mensagem ainda. Clique em Enfileirar {burstSize} mensagens.</p>
+          )}
           <div className="lanes">
             {lanes(msgs, maxLanes).map(([r, list]) => (
               <section key={r} aria-label={r} className="lane">

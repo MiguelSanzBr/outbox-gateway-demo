@@ -1,4 +1,4 @@
-import type { Msg } from '../domain/message'
+import { isMsg, type Msg } from '../domain/message'
 import type { GatewayApi, Worker } from '../application/ports'
 
 export class HttpError extends Error {
@@ -16,7 +16,11 @@ const json = async <T>(res: Response): Promise<T> => (await ok(res)).json() as P
 
 // httpApi é o adapter da porta GatewayApi em cima do fetch.
 export const httpApi: GatewayApi = {
-  listMessages: async () => json<Msg[]>(await fetch('/v1/messages')),
+  async listMessages() {
+    const rows = await json<unknown>(await fetch('/v1/messages'))
+    if (!Array.isArray(rows) || !rows.every(isMsg)) throw new Error('foto de /v1/messages em formato inesperado')
+    return rows as Msg[]
+  },
 
   async listWorkers() {
     const res = await fetch('/v1/admin/workers')

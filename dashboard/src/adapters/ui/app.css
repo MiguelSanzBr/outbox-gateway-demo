@@ -7,6 +7,8 @@
   --card: #ffffff;
   --line: #d4d7de;
   --focus: #1d4ed8;
+  --queued-bg: #eceef2;
+  --queued-fg: #343944;
   --pending-bg: #fff3cd;
   --pending-fg: #5c4300;
   --sending-bg: #dbeafe;
@@ -27,6 +29,8 @@
     --card: #1b1e25;
     --line: #353a46;
     --focus: #93c5fd;
+    --queued-bg: #262a33;
+    --queued-fg: #d5d9e1;
     --pending-bg: #3d2f00;
     --pending-fg: #ffe08a;
     --sending-bg: #172554;
@@ -100,6 +104,11 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+.hint {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+}
+
 .conn {
   margin: 0;
   color: var(--muted);
@@ -135,6 +144,7 @@ ol {
   padding: 0.4rem 0.6rem;
 }
 
+.st-queued { background: var(--queued-bg); color: var(--queued-fg); }
 .st-pending { background: var(--pending-bg); color: var(--pending-fg); }
 .st-sending { background: var(--sending-bg); color: var(--sending-fg); }
 .st-sent { background: var(--sent-bg); color: var(--sent-fg); }
