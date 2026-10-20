@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -46,40 +48,81 @@ func waitHealthy(t *testing.T, addr string) {
 	}
 }
 
-func TestEnv(t *testing.T) {
-	t.Setenv("T_STR", "x")
-	t.Setenv("T_INT", "7")
-	t.Setenv("T_DUR", "3s")
-	t.Setenv("T_RUIM", "abc")
+func env(kv ...string) func(string) string {
+	m := map[string]string{"DATABASE_URL": "postgres://x@y/z", "PROVIDER_URL": "http://mock:9090/v1/messages"}
+	for i := 0; i < len(kv); i += 2 {
+		m[kv[i]] = kv[i+1]
+	}
+	return func(k string) string { return m[k] }
+}
 
-	if got := envStr("T_STR", "d"); got != "x" {
-		t.Fatalf("envStr = %q", got)
+func TestLoadConfigDefaults(t *testing.T) {
+	c, err := loadConfig(env())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := envStr("T_NADA", "d"); got != "d" {
-		t.Fatalf("envStr sem valor = %q", got)
+	if c.Worker.Workers != 16 || c.App.Lease != 30*time.Second || c.App.Retry.MaxAttempts != 8 ||
+		c.Worker.ReapInterval != 5*time.Second || c.Addr != ":8080" || c.DemoAdmin || c.MaxStreams != 32 {
+		t.Fatalf("padrões: %+v", c)
 	}
-	if got := envInt("T_INT", 1); got != 7 {
-		t.Fatalf("envInt = %d", got)
+	if c, _ := loadConfig(env("WORKERS", "4", "LEASE", "6s", "DEMO_ADMIN", "1")); c.Worker.Workers != 4 || c.App.Lease != 6*time.Second || !c.DemoAdmin {
+		t.Fatalf("do ambiente: %+v", c)
 	}
-	if got := envInt("T_RUIM", 1); got != 1 {
-		t.Fatalf("envInt inválido = %d", got)
+}
+
+// Config errada falha no boot, com todos os problemas juntos, em vez de cair no padrão
+// em silêncio (WORKERS=abc subia 16) ou dar panic com o servidor no ar (REAP_INTERVAL=0s).
+func TestLoadConfigFailsFast(t *testing.T) {
+	cases := []struct {
+		env  func(string) string
+		want []string
+	}{
+		{env("WORKERS", "abc"), []string{"WORKERS"}},
+		{env("WORKERS", "0"), []string{"WORKERS"}},
+		{env("REAP_INTERVAL", "0s"), []string{"REAP_INTERVAL"}},
+		{env("POLL_INTERVAL", "-1s"), []string{"POLL_INTERVAL"}},
+		{env("LEASE", "10"), []string{"LEASE"}}, // sem unidade
+		{env("MAX_ATTEMPTS", "0"), []string{"MAX_ATTEMPTS"}},
+		{env("BACKOFF_BASE", "0s"), []string{"BACKOFF_BASE"}},
+		{env("BACKOFF_BASE", "2s", "BACKOFF_MAX", "1s"), []string{"BACKOFF_MAX"}},
+		{env("BACKOFF_MAX", "48h"), []string{"BACKOFF_MAX"}},
+		{env("SSE_MAX_STREAMS", "0"), []string{"SSE_MAX_STREAMS"}},
+		{env("PROVIDER_URL", ""), []string{"PROVIDER_URL"}},
+		{env("PROVIDER_URL", "ftp://mock/x"), []string{"PROVIDER_URL"}},
+		{env("PROVIDER_URL", "http://%zz"), []string{"PROVIDER_URL"}},
+		{env("DATABASE_URL", ""), []string{"DATABASE_URL"}},
+		{env("WORKERS", "x", "LEASE", "0s"), []string{"WORKERS", "LEASE"}},
 	}
-	if got := envDur("T_DUR", time.Second); got != 3*time.Second {
-		t.Fatalf("envDur = %s", got)
+	for _, c := range cases {
+		_, err := loadConfig(c.env)
+		if err == nil {
+			t.Errorf("%v: sem erro", c.want)
+			continue
+		}
+		for _, w := range c.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("erro %q sem %s", err, w)
+			}
+		}
 	}
-	if got := envDur("T_RUIM", time.Second); got != time.Second {
-		t.Fatalf("envDur inválido = %s", got)
-	}
+}
+
+// gatewayEnv é o mínimo pra run subir nos testes.
+func gatewayEnv(t *testing.T, addr string) {
+	t.Setenv("ADDR", addr)
+	t.Setenv("WORKERS", "2")
+	t.Setenv("PROVIDER_URL", "http://127.0.0.1:1/v1/messages")
 }
 
 func TestRunFailsFast(t *testing.T) {
 	cases := []struct{ name, url, workers string }{
-		{"url que nem parseia", "postgres://%zz", ""},
-		{"pool sem conexão nenhuma", "postgres://x:x@127.0.0.1:1/x", "-16"},
-		{"banco fora do ar", "postgres://x:x@127.0.0.1:1/x?connect_timeout=1", ""},
+		{"config inválida", "postgres://x:x@127.0.0.1:1/x", "abc"},
+		{"url que nem parseia", "postgres://%zz", "2"},
+		{"banco fora do ar", "postgres://x:x@127.0.0.1:1/x?connect_timeout=1", "2"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			gatewayEnv(t, "127.0.0.1:0")
 			t.Setenv("DATABASE_URL", c.url)
 			t.Setenv("WORKERS", c.workers)
 			if err := run(context.Background(), quiet); err == nil {
@@ -92,8 +135,7 @@ func TestRunFailsFast(t *testing.T) {
 // Porta inválida: run tem q devolver o erro e só voltar depois de parar os workers.
 func TestRunListenErrorStopsWorkers(t *testing.T) {
 	needDB(t)
-	t.Setenv("ADDR", "porta-que-nao-existe")
-	t.Setenv("WORKERS", "2")
+	gatewayEnv(t, "porta-que-nao-existe")
 	done := make(chan error)
 	go func() { done <- run(context.Background(), quiet) }()
 	select {
@@ -110,8 +152,7 @@ func TestRunListenErrorStopsWorkers(t *testing.T) {
 func TestMainGracefulShutdown(t *testing.T) {
 	needDB(t)
 	addr := freeAddr(t)
-	t.Setenv("ADDR", addr)
-	t.Setenv("WORKERS", "2")
+	gatewayEnv(t, addr)
 	exited := -1
 	exit = func(code int) { exited = code }
 	t.Cleanup(func() { exit = os.Exit })
@@ -154,8 +195,7 @@ func TestRunDemoAdminFlagAndSSEShutdown(t *testing.T) {
 	}{{"", http.StatusNotFound}, {"0", http.StatusNotFound}, {"1", http.StatusOK}} {
 		t.Run("DEMO_ADMIN="+c.flag, func(t *testing.T) {
 			addr := freeAddr(t)
-			t.Setenv("ADDR", addr)
-			t.Setenv("WORKERS", "2")
+			gatewayEnv(t, addr)
 			t.Setenv("DEMO_ADMIN", c.flag)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -195,5 +235,49 @@ func TestRunDemoAdminFlagAndSSEShutdown(t *testing.T) {
 				t.Fatal("stream SSE continuou aberto depois do shutdown")
 			}
 		})
+	}
+}
+
+// Shutdown com requisição em voo: ela termina com 202 antes da fleet parar e do pool
+// fechar. Antes o run seguia assim q o ListenAndServe voltava e a requisição pegava
+// o pool já fechado.
+func TestRunWaitsInFlightRequests(t *testing.T) {
+	needDB(t)
+	addr := freeAddr(t)
+	gatewayEnv(t, addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error)
+	go func() { done <- run(ctx, quiet) }()
+	waitHealthy(t, addr)
+
+	body, w := io.Pipe()
+	req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/messages", body)
+	req.Header.Set("Idempotency-Key", fmt.Sprintf("drain-%d", time.Now().UnixNano()))
+	resp := make(chan *http.Response, 1)
+	go func() {
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Error(err)
+		}
+		resp <- r
+	}()
+	_, _ = io.WriteString(w, `{"recipient":"drain",`)
+	time.Sleep(100 * time.Millisecond) // a requisição já está no handler, lendo o corpo
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+	_, _ = io.WriteString(w, `"body":"oi"}`)
+	_ = w.Close()
+
+	r := <-resp
+	if r == nil {
+		t.Fatal("sem resposta")
+	}
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusAccepted {
+		t.Fatalf("requisição em voo no shutdown: HTTP %d, esperado 202", r.StatusCode)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
