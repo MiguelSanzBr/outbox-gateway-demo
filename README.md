@@ -27,9 +27,30 @@ POST /v1/messages ──► BEGIN; INSERT messages; INSERT outbox; COMMIT ──
 4. **Lease, reaper e fencing.** Se o worker morre, a linha fica em `sending` até o lease vencer; o reaper a devolve à fila. Toda finalização exige o `lease_token` vigente, então um worker que "acorda" depois de perder o lease não consegue sobrescrever o estado. O gateway original não tinha reaper; essa é a melhoria desta versão.
 5. **Entrega efetivamente única.** O gateway garante *pelo menos uma vez*; a chave de idempotência vai no header para o provedor descartar reenvios. Sem esse apoio do provedor, um crash entre o envio e o commit gera duplicata. Não há como evitar isso só do lado de quem envia.
 
+## Arquitetura
+
+Hexagonal, sem cerimônia: o domínio no meio, os casos de uso em volta e tudo q fala com o mundo de fora (Postgres, HTTP, provedor, SSE, o próprio loop dos workers) vira adapter.
+
+```
+   adapters de entrada                                    adapters de saída
+   httpapi (REST) ──┐                                 ┌──► postgres (OutboxRepository, EventSource)
+   sse ─────────────┼──► app (casos de uso) ──portas──┼──► provider (Sender HTTP)
+   worker (loop) ───┘            │                    └──► worker.Fleet (WorkerPool, só na demo)
+                                 ▼
+                              domain
+```
+
+- `internal/domain`: estados e transições (`pending → sending → sent | dead | pending`), `OutboxEntry` com `Complete` e `Fail`, `LeaseToken` como fencing token, `RetryPolicy` (backoff com jitter e limite de tentativas), validação da mensagem e a regra de ordem por destinatário. Go puro.
+- `internal/app`: os casos de uso (`EnqueueMessage`, `ClaimNext`, `Deliver`, `CompleteDelivery`, `FailDelivery`, `ReapExpiredLeases`, `StreamEvents`, `KillWorker`) e as portas q eles usam (`OutboxRepository`, `Sender`, `EventSource`, `WorkerPool`).
+- `internal/adapters`: `postgres`, `provider`, `httpapi`, `sse`, `worker` e o `mockprovider`.
+
+A regra de dependência é teste, não combinado: `TestDependencyRule` lê os imports de `domain` e `app` com `go/parser` e falha se aparecer pgx, `net/http` ou adapter. No painel quem faz isso é o `no-restricted-imports` do ESLint.
+
+**Por que as invariantes de concorrência moram no adapter postgres.** O domínio decide o quê: qual a próxima transição, se é retry ou dead, quanto esperar. Quem garante o quando é o banco. O `FOR UPDATE SKIP LOCKED`, o `NOT EXISTS` da ordem por destinatário, o índice único parcial de uma mensagem em voo por destinatário e o `WHERE lease_token = $2` do fencing só valem se forem atômicos com a escrita, e só o Postgres enxerga todos os workers ao mesmo tempo. Trazer isso pra memória viraria ler, decidir e gravar em passos separados, com corrida no meio. Por isso o `domain.RecipientOrder` existe pra conferir a ordem do lado de quem recebe (o mock usa), mas a garantia em si fica no SQL do claim. Pelo mesmo motivo não tem porta de `Clock`: lease e reaper usam o `now()` do Postgres de propósito, pra não depender do relógio de cada worker.
+
 ## Garantias e testes
 
-Testes de integração contra Postgres real (`internal/outbox/`, `internal/api/`, `cmd/`):
+Testes de integração contra Postgres real (`internal/adapters/`, `cmd/`) e unitários no domínio e nos casos de uso:
 
 | Garantia | Teste |
 |---|---|
@@ -42,10 +63,20 @@ Testes de integração contra Postgres real (`internal/outbox/`, `internal/api/`
 | Worker que demorou mais que o lease não marca `sent` com token velho; a outra tentativa entrega | `TestWorkerThatLostLeaseDoesNotFinish` |
 | Banco fora do ar: store devolve o erro, workers logam e seguem tentando, API responde 500 sem vazar detalhe | `TestStoreSurfacesDBErrors`, `TestWorkersSurviveDBOutage`, `TestReadEndpointsAndErrors` |
 | `SIGINT` desliga gateway e mock limpo; se o listen falhar, os workers param antes do pool fechar | `TestMainGracefulShutdown`, `TestRunListenErrorStopsWorkers` |
+| Toda mudança de estado vira evento no `LISTEN`, inclusive a devolução pelo reaper | `TestListenStreamsStateChanges` |
+| SSE com ping; cliente q sai libera a conexão do `LISTEN`; desligar o gateway fecha o stream | `TestEventsStream`, `TestRunDemoAdminFlagAndSSEShutdown` |
+| Worker derrubado no meio do envio não finaliza: a linha fica em `sending` até o reaper e, religado, ele volta a entregar | `TestFleetKillMidSendLeavesRowForReaper` |
+| Rotas de admin só existem com `DEMO_ADMIN=1` | `TestAdminDisabledByDefault`, `TestRunDemoAdminFlagAndSSEShutdown` |
+| Máquina de estados e decisão de retry ou dead no domínio, sem banco | `TestStatusMachine`, `TestEntryTransitions` |
+| Domínio e casos de uso não importam pgx, `net/http` nem adapter | `TestDependencyRule` |
+| Painel: evento atrasado não volta o estado pra trás; reaper e dead viram aviso | `board.test.ts`, `message.test.ts` (Vitest) |
+| No navegador, contra a stack de verdade: mensagem enfileirada chega em `sent`; worker derrubado no meio do envio volta pelo reaper e é entregue | `e2e/demo.spec.ts` (Playwright) |
 
-Cobertura de 100% das instruções (fora o helper `internal/testdb`), com gate no CI. Os ramos de erro do banco rodam contra Postgres de verdade, sem mock: pool fechado pra simular banco fora e trigger no schema do teste pra derrubar um comando específico no meio da transação.
+Cobertura de 100% das instruções (fora o helper `internal/testdb`), com gate no CI. O painel tem o mesmo gate no Vitest (instruções, ramos, funções e linhas), fora o `main.tsx`, q só liga os adapters reais e é exercitado pelo E2E. Os ramos de erro do banco rodam contra Postgres de verdade, sem mock: pool fechado pra simular banco fora e trigger no schema do teste pra derrubar um comando específico no meio da transação.
 
 Para conferir que os testes de ordem não passam por acaso, removi a condição de ordem da query de claim: os dois primeiros testes da tabela falharam.
+
+Fiz o mesmo com o painel e o admin, quebrando de propósito e voltando depois: ligar as rotas de admin sem olhar o `DEMO_ADMIN` derruba o `TestRunDemoAdminFlagAndSSEShutdown`; um `WHEN` no trigger q ignora a volta pra `pending` deixa o `TestListenStreamsStateChanges` sem o evento do reaper; deixar o worker derrubado finalizar a linha quebra o `TestFleetKillMidSendLeavesRowForReaper`; aceitar evento atrasado no painel quebra dois testes do Vitest. Colocar import de `net/http` em `app` ou de `app` em `domain` derruba o `TestDependencyRule`.
 
 ## Números do teste de carga
 
@@ -79,9 +110,33 @@ O que os números mostram:
 - **Head-of-line blocking:** uma mensagem em backoff segura as seguintes do mesmo destinatário. Uma mensagem `dead` libera o destinatário: escolhi não travar a conversa para sempre.
 - A ordem garantida é a de commit. Requisições concorrentes para o mesmo destinatário não têm ordem definida.
 - Linhas `sent` nunca são apagadas. Em produção, isso pede particionamento por data ou arquivamento.
-- Sem `LISTEN/NOTIFY` (polling) e sem rate limit por provedor; um 429 é tratado só como retry.
+- Os workers fazem polling (o `LISTEN/NOTIFY` só alimenta o painel) e não tem rate limit por provedor; um 429 é tratado só como retry.
 - O lease precisa ser maior que o envio mais lento; o envio é cortado em metade do lease. O relógio usado é o do Postgres (`now()`), não o dos workers.
 - O mock guarda tudo em memória e não persiste nada.
+
+## Painel em tempo real
+
+`dashboard/` é um painel em Vite, React 19 e TypeScript strict q mostra as mensagens andando entre os estados ao vivo: raias por destinatário (dá pra ver a ordem sendo respeitada), contadores por estado, a lista de workers com botão de derrubar e um aviso quando o reaper devolve uma linha. Segue a mesma divisão do Go: `domain` (estado da mensagem e contadores), `application` (casos de uso sobre as portas `GatewayApi` e `GatewayEvents`) e `adapters` (fetch, `EventSource` e a tela em React).
+
+Como funciona:
+
+1. Um trigger `AFTER INSERT OR UPDATE` na `outbox` faz `pg_notify` com id, destinatário, status, tentativas, worker e último erro. Como o reaper é só mais um `UPDATE`, a devolução dele aparece igual a qualquer outra mudança.
+2. `GET /v1/events` abre uma conexão própria com `LISTEN` e repassa cada notificação como evento SSE, com ping a cada 15 s pra proxy não derrubar a conexão parada. Cliente q sai libera a conexão do `LISTEN`; desligar o gateway fecha todos os streams.
+3. O painel busca a foto em `GET /v1/messages` (as 500 mais novas) com TanStack Query e aplica os eventos do `EventSource` por cima. Toda vez q o SSE conecta ou reconecta ele busca a foto de novo, pq o NOTIFY não guarda nada.
+4. Foto e evento chegam em qualquer ordem. Em vez de coluna de versão, o painel ordena pelo ciclo de vida: cada claim soma 1 em `attempts` e o `sending` vem antes do resultado da mesma tentativa, então `attempts * 2 + (sending ? 0 : 1)` só cresce. Evento com posição menor ou igual à atual é ignorado.
+
+**Por que LISTEN/NOTIFY e não polling.** Polling por `updated_at` ou por coluna de versão perde evento: duas transações podem gravar numa ordem e commitar na outra, e o cursor passa por cima da q commitou depois. O NOTIFY só sai no commit, na ordem dos commits, pega qualquer escritor (worker, reaper, até um `UPDATE` na mão) e não precisa de coluna nova. O custo:
+
+- Não é durável: quem não estava ouvindo perde o evento. Por isso a foto é recarregada a cada reconexão.
+- Todo commit q notifica passa por um lock global da fila de notificação. Os números do teste de carga acima foram medidos antes do trigger existir e não medi de novo; com carga alta vale tirar o trigger ou trocar o painel pra polling.
+- Payload de no máximo 8000 bytes, por isso o `last_error` vai cortado em 200 caracteres.
+- Cada cliente SSE segura uma conexão de banco. Pra demo serve; pra muitos clientes o certo é um listener só no processo distribuindo pros streams.
+
+**Derrube um worker de verdade.** Com `DEMO_ADMIN=1` o gateway liga `GET /v1/admin/workers`, `POST /v1/admin/workers/{id}/kill` e `POST /v1/admin/workers/revive`. O kill cancela o contexto daquele worker com uma causa própria: se ele estiver enviando, o envio é cortado e a linha não é finalizada. Ela fica em `sending` com o id do worker até o lease vencer e o reaper devolver, e no painel dá pra ver a linha parada, o aviso "devolvida pelo reaper" e outro worker entregando. O botão "Enfileirar 20 mensagens" manda uma rajada pra 4 destinatários pela própria API, uma requisição por vez pra ordem de commit ser a ordem de envio.
+
+Essas rotas vêm desligadas e **nunca podem ser ligadas em produção**: não têm autenticação, então qualquer um na rede derruba os workers. Aliás `GET /v1/events` e `GET /v1/messages` mostram o destinatário de todas as mensagens, igual ao `GET /v1/messages/{id}` q já existia; num gateway de verdade tudo isso fica atrás de autenticação.
+
+Acessibilidade: os avisos (reaper, dead, ações) ficam num `role="log"` com `aria-live`, sem anunciar cada `sent` pra não afogar o leitor de tela; cada mensagem tem nome acessível com estado, tentativa e worker; o estado nunca é só cor; tudo é botão nativo e funciona no teclado; tema claro e escuro pelo `prefers-color-scheme`; o grid cabe em 375 px.
 
 ## Como rodar
 
@@ -108,7 +163,7 @@ RATE=100 DURATION=60s docker compose run --rm k6
 ./load/report.sh
 ```
 
-`report.sh` espera a outbox esvaziar e imprime aceitas, entregues, latência ponta a ponta e os contadores do mock (`duplicates`, `order_violations`). Variáveis do mock: `MOCK_LATENCY`, `MOCK_JITTER`, `MOCK_FAIL_RATE`. Do gateway: `WORKERS`, `LEASE`, `MAX_ATTEMPTS`, `BACKOFF_BASE`, `BACKOFF_MAX`.
+`report.sh` espera a outbox esvaziar e imprime aceitas, entregues, latência ponta a ponta e os contadores do mock (`duplicates`, `order_violations`). Variáveis do mock: `MOCK_LATENCY`, `MOCK_JITTER`, `MOCK_FAIL_RATE`. Do gateway: `WORKERS`, `LEASE`, `MAX_ATTEMPTS`, `BACKOFF_BASE`, `BACKOFF_MAX`, `DEMO_ADMIN`.
 
 Chamada manual:
 
@@ -119,13 +174,42 @@ curl -i -X POST localhost:8080/v1/messages \
 curl localhost:8080/v1/messages/1
 ```
 
+Painel (sobe junto no compose, em http://localhost:5180):
+
+```bash
+DEMO_ADMIN=1 docker compose up -d --build
+```
+
+Sem `DEMO_ADMIN=1` o painel funciona igual, só sem os botões de derrubar worker. Pra mexer no painel com o gateway rodando em `:8080`:
+
+```bash
+cd dashboard && npm ci
+npm run dev        # Vite em :5180, repassa /v1 pro gateway
+npm run lint && npm run typecheck && npm run coverage && npm run build
+```
+
+E2E com Playwright contra a stack de verdade. Com 2 workers e 1 s por envio sempre tem worker no meio de um envio pra derrubar:
+
+```bash
+docker compose down -v
+DEMO_ADMIN=1 WORKERS=2 LEASE=6s MOCK_LATENCY=1s MOCK_JITTER=0s MOCK_FAIL_RATE=0 docker compose up -d --build
+cd dashboard && npx playwright install chromium && npm run e2e
+```
+
 ## Estrutura
 
 ```
-cmd/gateway          API + workers + reaper num processo
-cmd/mockprovider     provedor simulado
-internal/outbox      schema, store (claim, lease, reaper), workers, sender HTTP
-internal/api         handlers HTTP e validação
-internal/mockprovider latência, falhas, deduplicação e checagem de ordem
-load/                script k6, relatório e resultados brutos
+cmd/gateway                    raiz de composição: API + workers + reaper num processo
+cmd/mockprovider               provedor simulado
+internal/domain                estados, transições, lease, retry, validação e ordem (Go puro)
+internal/app                   casos de uso e portas
+internal/adapters/postgres     schema, repositório (claim, lease, reaper) e LISTEN/NOTIFY
+internal/adapters/httpapi      handlers HTTP
+internal/adapters/sse          stream SSE pro painel
+internal/adapters/provider     sender HTTP pro provedor
+internal/adapters/worker       loop dos workers e do reaper, kill e revive da demo
+internal/adapters/mockprovider latência, falhas, deduplicação e checagem de ordem
+internal/archtest              regra de dependência entre as camadas
+dashboard/                     painel (domain, application, adapters) e E2E
+load/                          script k6, relatório e resultados brutos
 ```
