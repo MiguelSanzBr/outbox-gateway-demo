@@ -115,7 +115,7 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// Log de acesso com request id: o do cliente se for razoável, senão um gerado, e volta
+// Log de acesso com request id: o do cliente se for razoável, senão um novo aleatório, e volta
 // no header da resposta. Sonda de saúde e scrape não entram no log. Erro interno sai
 // com o mesmo id, pra dar pra achar a requisição.
 func TestAccessLogWithRequestID(t *testing.T) {
@@ -142,7 +142,7 @@ func TestAccessLogWithRequestID(t *testing.T) {
 	}
 	for _, bad := range []string{"", "com espaço", strings.Repeat("x", 65)} {
 		if got := send(bad, "/healthz").Get("X-Request-Id"); got == "" || got == bad {
-			t.Fatalf("id %q: resposta com %q, esperado um gerado", bad, got)
+			t.Fatalf("id %q: resposta com %q, esperado um novo", bad, got)
 		}
 	}
 	send("", "/readyz")
