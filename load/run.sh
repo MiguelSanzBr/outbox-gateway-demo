@@ -28,6 +28,9 @@ fi
 docker compose run --rm -T k6 2>&1 |
   grep -E 'ingest:|checks_|✗|✓|↳|http_req_duration\.|http_req_failed|dropped_iterations|iterations\.' | grep -v '\[ *100% \]' >> "$out" || true
 wait
-./load/report.sh >> "$out" || { cat "$out"; exit 1; }
+status=0
+./load/report.sh >> "$out" || status=1
 docker compose logs gateway 2>&1 | grep 'devolvidos' | sed -E 's/^gateway-[0-9]+ *\| //' >> "$out" || true
+docker compose down -v >/dev/null 2>&1
 cat "$out"
+exit $status
