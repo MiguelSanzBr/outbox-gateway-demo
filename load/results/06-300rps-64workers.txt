@@ -1,0 +1,27 @@
+# 06-300rps-64workers: RATE=300 DURATION=60s WORKERS=64 RECIPIENTS=1000 LEASE=10s KILL_AT=nenhum
+# commit f9b2b53; mock LATENCY=80ms JITTER=120ms FAIL_RATE=0.05; k6 v1.3.0+dirty (commit/5870e99ae8-dirty, go1.25.1, linux/amd64)
+# load average antes: 2.36, 1.50, 1.55
+              * ingest: 300.00 iterations/s for 1m0s (maxVUs: 50-200, gracefulStop: 30s)
+    ✓ 'rate>0.99' rate=100.00%
+    dropped_iterations
+    ✗ 'count==0' count=11
+    checks_total.......: 18349   304.813425/s
+    checks_succeeded...: 100.00% 18349 out of 18349
+    checks_failed......: 0.00%   0 out of 18349
+    ✓ aceita (202)
+    ✓ repetição reconhecida (200)
+    http_req_duration..............: avg=42.86ms min=369.14µs med=37.6ms  max=209.62ms p(90)=46.46ms p(95)=67.24ms
+    http_req_failed................: 0.00%  0 out of 18349
+    dropped_iterations.............: 11     0.182732/s
+    iterations.....................: 17989  298.833108/s
+time="2026-10-21T00:55:15Z" level=error msg="thresholds on metrics 'dropped_iterations' have been crossed"
+mensagens aceitas | 17989
+entregues (sent) | 17989
+dead | 0
+sem linha na outbox | 0
+tentativas extras | 913
+janela de entrega (s) | 66.8
+vazão de entrega (msg/s) | 269.3
+ponta a ponta p50/p95/p99 (ms) | 2925 / 7197 / 9923
+provedor: {"accepted":17989,"duplicates":0,"failures_injected":913,"order_violations":0}
+ok: nada perdido, ordem preservada

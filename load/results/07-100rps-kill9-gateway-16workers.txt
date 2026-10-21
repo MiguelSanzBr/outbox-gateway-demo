@@ -1,0 +1,29 @@
+# 07-100rps-kill9-gateway-16workers: RATE=100 DURATION=60s WORKERS=16 RECIPIENTS=1000 LEASE=10s KILL_AT=20
+# commit f9b2b53; mock LATENCY=80ms JITTER=120ms FAIL_RATE=0.05; k6 v1.3.0+dirty (commit/5870e99ae8-dirty, go1.25.1, linux/amd64)
+# load average antes: 2.42, 1.79, 1.65
+              * ingest: 100.00 iterations/s for 1m0s (maxVUs: 50-200, gracefulStop: 30s)
+    ✓ 'rate>0.99' rate=99.61%
+    dropped_iterations
+    ✗ 'count==0' count=387
+    checks_total.......: 5727   95.446339/s
+    checks_succeeded...: 99.61% 5705 out of 5727
+    checks_failed......: 0.38%  22 out of 5727
+    ✗ aceita (202)
+      ↳  99% - ✓ 5592 / ✗ 22
+    ✓ repetição reconhecida (200)
+    http_req_duration..............: avg=2.05ms  min=0s       med=1.43ms max=41.59ms p(90)=2.66ms p(95)=3.79ms 
+    http_req_failed................: 0.38%  22 out of 5727
+    dropped_iterations.............: 387    6.449753/s
+    iterations.....................: 5614   93.563078/s
+time="2026-10-21T00:56:32Z" level=error msg="thresholds on metrics 'dropped_iterations' have been crossed"
+mensagens aceitas | 5593
+entregues (sent) | 5593
+dead | 0
+sem linha na outbox | 0
+tentativas extras | 295
+janela de entrega (s) | 60.3
+vazão de entrega (msg/s) | 92.7
+ponta a ponta p50/p95/p99 (ms) | 601 / 1805 / 3429
+provedor: {"accepted":5593,"duplicates":14,"failures_injected":281,"order_violations":0}
+ok: nada perdido, ordem preservada
+{"time":"2026-10-21T00:56:02.202557018Z","level":"WARN","msg":"leases expirados devolvidos à fila","component":"reaper","rows":15}

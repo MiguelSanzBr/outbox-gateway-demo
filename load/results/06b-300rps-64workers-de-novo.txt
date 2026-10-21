@@ -1,0 +1,26 @@
+# 06b-300rps-64workers-de-novo: RATE=300 DURATION=60s WORKERS=64 RECIPIENTS=1000 LEASE=10s KILL_AT=nenhum
+# commit f9b2b53; mock LATENCY=80ms JITTER=120ms FAIL_RATE=0.05; k6 v1.3.0+dirty (commit/5870e99ae8-dirty, go1.25.1, linux/amd64)
+# load average antes: 0.96, 0.87, 1.20
+              * ingest: 300.00 iterations/s for 1m0s (maxVUs: 50-200, gracefulStop: 30s)
+    ✓ 'rate>0.99' rate=100.00%
+    dropped_iterations
+    ✓ 'count==0' count=0
+    checks_total.......: 18362   306.017958/s
+    checks_succeeded...: 100.00% 18362 out of 18362
+    checks_failed......: 0.00%   0 out of 18362
+    ✓ aceita (202)
+    ✓ repetição reconhecida (200)
+    http_req_duration..............: avg=2.09ms min=321.07µs med=1.69ms max=36.7ms  p(90)=3.47ms p(95)=4.2ms 
+    http_req_failed................: 0.00%  0 out of 18362
+    dropped_iterations.............: 0      0/s
+    iterations.....................: 18001  300.001593/s
+mensagens aceitas | 18001
+entregues (sent) | 18001
+dead | 0
+sem linha na outbox | 0
+tentativas extras | 933
+janela de entrega (s) | 60.4
+vazão de entrega (msg/s) | 297.9
+ponta a ponta p50/p95/p99 (ms) | 151 / 214 / 506
+provedor: {"accepted":18001,"duplicates":0,"failures_injected":933,"order_violations":0}
+ok: nada perdido, ordem preservada

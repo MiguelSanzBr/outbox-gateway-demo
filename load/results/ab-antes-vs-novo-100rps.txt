@@ -1,0 +1,26 @@
+# A/B: código de antes das correções (613a7e7) contra o novo (1abb3c8), alternando, mesma máquina e mesmo compose
+# RATE=100 DURATION=60s WORKERS=16 RECIPIENTS=1000, mock 80 ms + 0-120 ms, 5% de 503. "load" é o load average da máquina antes de cada rodada.
+# A máquina não é dedicada: a variação entre rodadas do mesmo código é maior q a diferença entre os dois.
+== antes (613a7e7) load 1.00, 1.32, 2.41
+    http_req_duration..............: avg=11.68ms min=299.8µs med=1.32ms max=607.45ms p(90)=2.86ms p(95)=13.05ms
+    dropped_iterations.............: 6      0.099999/s
+mensagens aceitas | 5994
+vazão de entrega (msg/s) | 99.1
+ponta a ponta p50/p95/p99 (ms) | 572 / 1517 / 1639
+== novo (1abb3c8) load 3.43, 2.01, 2.57
+    http_req_duration..............: avg=1.55ms min=341.18µs med=1.39ms max=31.4ms  p(90)=2.03ms p(95)=2.31ms
+    dropped_iterations.............: 0      0/s
+mensagens aceitas | 6000
+vazão de entrega (msg/s) | 99.7
+ponta a ponta p50/p95/p99 (ms) | 163 / 248 / 534
+== antes (613a7e7) load 2.92, 2.21, 2.60
+    http_req_duration..............: avg=1.89ms min=292.56µs med=1.42ms max=34.18ms p(90)=3.09ms p(95)=4.17ms
+mensagens aceitas | 6000
+vazão de entrega (msg/s) | 99.1
+ponta a ponta p50/p95/p99 (ms) | 165 / 323 / 537
+== novo (1abb3c8) load 8.03, 3.52, 3.00
+    http_req_duration..............: avg=7.08ms min=332.3µs med=1.49ms max=674.91ms p(90)=3.09ms p(95)=6.07ms
+    dropped_iterations.............: 9      0.149996/s
+mensagens aceitas | 5992
+vazão de entrega (msg/s) | 99.6
+ponta a ponta p50/p95/p99 (ms) | 183 / 648 / 996

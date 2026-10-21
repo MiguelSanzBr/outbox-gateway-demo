@@ -1,0 +1,46 @@
+# Custo do claim com backlog de 100 mil linhas e o provedor fora do ar
+# 1.000 destinatários x 100 mensagens; a cabeça de cada destinatário em backoff (next_attempt_at daqui a 3 h),
+# ou seja, não tem nada pra reivindicar. Postgres 17 (postgres:17-alpine), VACUUM ANALYZE antes, mesma máquina
+# do teste de carga. EXPLAIN (ANALYZE, BUFFERS, TIMING OFF) dentro de uma transação com ROLLBACK.
+
+## antes (613a7e7): todas as 100k em pending, NOT EXISTS por linha procurando destinatário livre
+                                                            QUERY PLAN                                                             
+-----------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.71..1.45 rows=1 width=20) (actual rows=0 loops=1)
+   Buffers: shared hit=398194
+   ->  LockRows  (cost=0.71..49106.84 rows=65993 width=20) (actual rows=0 loops=1)
+         Buffers: shared hit=398194
+         ->  Nested Loop Anti Join  (cost=0.71..48446.91 rows=65993 width=20) (actual rows=0 loops=1)
+               Buffers: shared hit=398194
+               ->  Index Scan using outbox_ready on outbox o  (cost=0.29..4767.92 rows=98990 width=18) (actual rows=99000 loops=1)
+                     Filter: ((status = 'pending'::text) AND (next_attempt_at <= now()))
+                     Rows Removed by Filter: 1000
+                     Buffers: shared hit=2194
+               ->  Index Scan using outbox_open on outbox p  (cost=0.42..1.22 rows=33 width=18) (actual rows=1 loops=99000)
+                     Index Cond: ((recipient = o.recipient) AND (id < o.id))
+                     Filter: (status = ANY ('{pending,sending}'::text[]))
+                     Buffers: shared hit=396000
+ Planning:
+   Buffers: shared hit=270
+ Planning Time: 1.490 ms
+ Execution Time: 350.711 ms
+(18 rows)
+
+
+## depois (migração 002): só a cabeça em pending, o resto em queued; o claim é um range no índice (next_attempt_at, id)
+                                                     QUERY PLAN                                                      
+---------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.28..1.59 rows=1 width=22) (actual rows=0 loops=1)
+   Buffers: shared hit=2
+   ->  LockRows  (cost=0.28..1287.39 rows=983 width=22) (actual rows=0 loops=1)
+         Buffers: shared hit=2
+         ->  Index Scan using outbox_ready on outbox  (cost=0.28..1277.56 rows=983 width=22) (actual rows=0 loops=1)
+               Index Cond: (next_attempt_at <= now())
+               Filter: (status = 'pending'::text)
+               Buffers: shared hit=2
+ Planning:
+   Buffers: shared hit=258
+ Planning Time: 1.478 ms
+ Execution Time: 0.055 ms
+(12 rows)
+
