@@ -19,6 +19,8 @@ dirty=$(git diff --quiet HEAD -- . ':!load/results' || echo ' (com mudança loca
 {
   echo "# $name: RATE=$RATE DURATION=$DURATION WORKERS=$WORKERS RECIPIENTS=$RECIPIENTS LEASE=${LEASE:-10s} KILL_AT=${KILL_AT:-nenhum}"
   echo "# commit $(git rev-parse --short HEAD)$dirty; mock LATENCY=${MOCK_LATENCY:-80ms} JITTER=${MOCK_JITTER:-120ms} FAIL_RATE=${MOCK_FAIL_RATE:-0.05}; $(docker compose run --rm -T k6 version | head -1)"
+  # a máquina não é dedicada: a carga de antes entra no registro pra dar pra comparar rodadas
+  echo "# load average antes: $(uptime | sed 's/.*average: //')"
 } > "$out"
 
 if [ -n "${KILL_AT:-}" ]; then
@@ -26,7 +28,7 @@ if [ -n "${KILL_AT:-}" ]; then
 fi
 # no cenário de kill os thresholds falham de propósito (requisições recusadas na queda)
 docker compose run --rm -T k6 2>&1 |
-  grep -E 'ingest:|checks_|✗|✓|↳|http_req_duration\.|http_req_failed|dropped_iterations|iterations\.' | grep -v '\[ *100% \]' >> "$out" || true
+  grep -E 'ingest:|checks_|✗|✓|↳|http_req_duration\.|http_req_failed|dropped_iterations|iterations\.' | grep -v '\[ *100% \]' | sed 's/—/-/g' >> "$out" || true
 wait
 status=0
 ./load/report.sh >> "$out" || status=1
