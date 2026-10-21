@@ -15,7 +15,7 @@ docker compose down -v >/dev/null 2>&1
 docker compose up -d --build --wait postgres mockprovider gateway >/dev/null 2>&1
 timeout 60 sh -c 'until curl -sf localhost:8080/readyz; do sleep 1; done'
 
-dirty=$(git diff --quiet HEAD -- . ':!load/results' || echo ' (com mudança local)')
+dirty=$(git diff --quiet HEAD -- . ':!load/results' ':!*.md' ':!docs' || echo ' (com mudança local no código)')
 {
   echo "# $name: RATE=$RATE DURATION=$DURATION WORKERS=$WORKERS RECIPIENTS=$RECIPIENTS LEASE=${LEASE:-10s} KILL_AT=${KILL_AT:-nenhum}"
   echo "# commit $(git rev-parse --short HEAD)$dirty; mock LATENCY=${MOCK_LATENCY:-80ms} JITTER=${MOCK_JITTER:-120ms} FAIL_RATE=${MOCK_FAIL_RATE:-0.05}; $(docker compose run --rm -T k6 version | head -1)"
